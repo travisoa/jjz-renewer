@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jjz-renewer"
+version = "0.1.0"
+description = "本地进京证续办计划与定时执行工具"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+login = ["cryptography"]
+
+[project.scripts]
+jjz = "jjz.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jjz*"]
+
+[tool.setuptools.package-data]
+jjz = ["config.example.toml"]

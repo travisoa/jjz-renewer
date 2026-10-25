@@ -1,0 +1,60 @@
+# 复制为 config.toml；车牌和申请模板须按本人实际情况填写。
+[api]
+base_url = "https://jjz.jtgl.beijing.gov.cn"
+auth_file = "secrets/authorization.txt"
+timeout_seconds = 20
+
+[vehicle]
+plate = "冀A00000" # 替换为本人车牌，避免处理同账号下其他车辆
+default_permit = "outside" # 日常自动续六环外；六环内通过 --permit inside 手动选择
+
+[renewal]
+earliest_time = "08:00" # 北京时间
+outside_lead_days = 0 # 默认到期当天申请次日生效；1 仅在本人接口确认允许时使用
+submission_enabled = false # 完成在线只读核验后再开启
+
+[storage]
+data_dir = "data"
+
+[application]
+# 对应 App「进京信息」页。车辆、驾驶人、证件类型和进京日期由程序在提交前向服务端获取。
+# 坐标均为高德（GCJ-02）经纬度。空值会阻止真实提交。
+jjmd = "" # 进京目的代码，多选用英文逗号分隔：01 自驾旅游 02 看病就医 03 探亲访友 04 学习培训 05 公务差旅 06 其它
+jjmdmc = "" # 与 jjmd 一一对应的名称，同样用英文逗号分隔
+area = "" # 目的地区县名称，如 朝阳区
+jjdq = "" # 目的地区县代码：001 东城 002 西城 003 朝阳 004 丰台 005 石景山 006 海淀 007 门头沟 008 房山 009 通州 010 顺义 011 昌平 012 大兴 013 怀柔 014 平谷 015 密云 016 延庆 017 开发区
+xxdz = "" # 目的地详细地址
+jjdzgdjd = "" # 目的地经度
+jjdzgdwd = "" # 目的地纬度
+sfzj = "" # 申请时车辆是否已在京：1 在京（填 zjxxdz 三项）；0 不在京（填 jjlk 四项）
+zjxxdz = "" # 在京详细地址
+zjxxdzgdjd = ""
+zjxxdzgdwd = ""
+jjlk = "" # 进京道路代码，如 00306（京沪高速应寺检查站）
+jjlkmc = "" # 进京道路名称，与 App 显示一致
+jjlkgdjd = ""
+jjlkgdwd = ""
+sqdzgdjd = "" # 提交申请时所在位置的经度（App 取手机定位）
+sqdzgdwd = "" # 提交申请时所在位置的纬度
+txrxx = [] # 同行人；服务端未开启同行人登记时保持空数组
+
+[inside_application]
+# 手动办理六环内时使用独立模板，字段同上，不能假设与六环外目的地相同。
+jjmd = ""
+jjmdmc = ""
+area = ""
+jjdq = ""
+xxdz = ""
+jjdzgdjd = ""
+jjdzgdwd = ""
+sfzj = ""
+zjxxdz = ""
+zjxxdzgdjd = ""
+zjxxdzgdwd = ""
+jjlk = ""
+jjlkmc = ""
+jjlkgdjd = ""
+jjlkgdwd = ""
+sqdzgdjd = ""
+sqdzgdwd = ""
+txrxx = []
