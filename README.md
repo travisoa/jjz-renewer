@@ -9,7 +9,7 @@
 - 先把提交意图写入 SQLite 再提交；超时、中断或结果不明时只查询核验，不会盲目重发。
 - 业务凭证有两种取得方式：在终端用手机号（密码或短信）登录，核验目标车辆后保存；或从北京交警 App 的查询请求中取得后手动保存。
 - 图形验证码可由 `ddddocr` 在进程内自动识别，识别失败时再由本人输入。
-- 凭证到期后，下次办理时自动登录续期（开启 `auto_relogin`，用密码和本机验证码识别）；程序只输出结果，通知由定时代理任务负责发送。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
+- 凭证到期后，下次办理时自动登录续期（`auto_relogin`，示例配置默认开启，用密码和本机验证码识别）；程序只输出结果，通知由定时代理任务负责发送。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
 
 ## 运行环境
 
@@ -44,7 +44,7 @@ python3 -m jjz doctor                            # 离线检查配置和模板
 python3 -m jjz status                            # 在线只读查询
 ```
 
-1. 在 `config.toml` 填写本人车牌。要用密码自动登录时，在 `secrets/login.toml` 填写手机号和密码；只有登录命令和自动重新登录读取这个文件。希望凭证失效时无人值守自动登录，再把 `config.toml` 的 `[api].auto_relogin` 设为 `true`，用 `doctor` 确认 `auto_relogin: ready`。两份示例分别是 [jjz/config.example.toml](jjz/config.example.toml) 和 [jjz/login.example.toml](jjz/login.example.toml)，真实文件已列入 `.gitignore`。
+1. 在 `config.toml` 填写本人车牌。要用密码自动登录时，在 `secrets/login.toml` 填写手机号和密码；只有登录命令和自动重新登录读取这个文件。示例配置默认开启凭证失效时的无人值守自动登录（`[api].auto_relogin = true`），用 `doctor` 确认 `auto_relogin: ready`；不保存密码时改为 `false`。两份示例分别是 [jjz/config.example.toml](jjz/config.example.toml) 和 [jjz/login.example.toml](jjz/login.example.toml)，真实文件已列入 `.gitignore`。
 2. 按 App「进京信息」页填写申请模板：进京目的、目的地区县及详细地址、目的地坐标、是否已在京（在京填在京地址及坐标，不在京填进京道路及坐标）、提交时所在位置坐标。代码表写在模板注释里，坐标均为高德（GCJ-02）经纬度。外证用 `[application]`，内证用 `[inside_application]`，内证模板不填不影响外证。
 3. 用 `auth-set --login` 登录并保存业务凭证；也可以按 [办理凭证获取](docs/login-usage.md) 从 App 查询请求中取得凭证，再运行 `auth-set` 隐藏输入。凭证保存为 600 权限的私有文件，不进入命令参数、提交记录或程序输出。
 4. `doctor` 显示 `outside_application: ready`，并且 `status` 能查到本人车辆后，配置就完成了。

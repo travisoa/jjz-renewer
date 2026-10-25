@@ -4,7 +4,7 @@ base_url = "https://jjz.jtgl.beijing.gov.cn"
 # 凭证和登录文件的路径可改，但须放在 secrets/ 下或仓库之外；.gitignore 只保护这些默认位置和文件名。
 auth_file = "secrets/authorization.txt"
 login_file = "secrets/login.toml" # 可选，登录手机号和密码只放这里，不写进本文件
-auto_relogin = false # 凭证失效时用 login_file 的密码和本机验证码识别自动登录一次，识别不出直接报错
+auto_relogin = true # 凭证失效时用 login_file 的密码和本机验证码识别自动登录一次，识别不出直接报错；不保存密码时改为 false
 timeout_seconds = 20
 
 [vehicle]

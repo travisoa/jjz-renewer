@@ -50,7 +50,7 @@ python3 -m jjz plan
 
 ## 无人值守自动重新登录
 
-在 `config.toml` 的 `[api]` 设置 `auto_relogin = true`，并在 `secrets/login.toml` 填写 `phone` 和 `password`，`doctor` 会显示 `auto_relogin: ready`。之后 `status`、`plan`、`run` 遇到凭证失效时：
+示例配置在 `[api]` 默认开启 `auto_relogin = true`，配置中没有这一项时视为关闭。在 `secrets/login.toml` 填写 `phone` 和 `password` 后，`doctor` 会显示 `auto_relogin: ready`；不保存密码时改为 `false`，否则 `doctor` 会提示缺少登录信息。之后 `status`、`plan`、`run` 遇到凭证失效时：
 
 1. 用密码登录一次，图形验证码只由本机识别，最多换 3 张；识别不出或连续被判错就停止，从不等人输入，也不打开图片。
 2. 账号、密码、实名等级等错误不重试，避免反复登录。
