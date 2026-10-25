@@ -140,6 +140,8 @@ AGENTS.md         代理操作说明（CLAUDE.md 引用同一份）
 
 本项目没有复制该项目的源码。之后又对照北京交警当前的官方 H5 页面，重新整理了提交字段和提交前校验，详见 [研究记录](docs/reference-notes.md)。该项目的 README 对商用、转载等有自定义限制；本仓库的许可只适用于本仓库自己的代码和文档。
 
+感谢 [sml2h3/ddddocr](https://github.com/sml2h3/ddddocr)。图形验证码的自动识别使用这个库（MIT 许可），它作为可选依赖按 [requirements.txt](requirements.txt) 单独安装，本仓库不包含其代码。
+
 ## 许可
 
 [PolyForm Noncommercial License 1.0.0](LICENSE)：可以免费用于个人、学习研究、非营利组织和政府机构等非商业用途，可以修改和再分发，但须附上许可证全文及其中的 `Required Notice` 署名行；**禁止任何商业用途**。商业使用请先联系作者另行授权。
