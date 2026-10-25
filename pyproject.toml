@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-login = ["cryptography"]
+ocr = ["ddddocr==1.6.1", "pillow>=13.0"]
 
 [project.scripts]
 jjz = "jjz.cli:main"
@@ -19,4 +19,4 @@ jjz = "jjz.cli:main"
 include = ["jjz*"]
 
 [tool.setuptools.package-data]
-jjz = ["config.example.toml"]
+jjz = ["config.example.toml", "login.example.toml"]

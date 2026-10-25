@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from .api import (ApiClient, ApiError, COUNT_CHECK_PATH, DATES_PATH, DRIVER_PATH,
                   ROUTE_PATH, SITE_CONFIG_PATH, VEHICLE_CHECK_PATH)
 from .config import ConfigError, IN_BEIJING_FIELDS, ROAD_FIELDS
-from .domain import DomainError, normalize, plan, record_type, select_vehicle
+from .domain import EXPIRED, DomainError, normalize, plan, record_type, select_vehicle
 from .storage import Journal, attempt_key, exclusive
 
 
@@ -14,6 +14,7 @@ from .storage import Journal, attempt_key, exclusive
 VEHICLE_FIELDS = ("vId", "hphm", "hpzl", "ylzsfkb", "elzsfkb", "elzqyms", "ylzqyms",
                   "elzmc", "ylzmc", "cllx")
 AVAILABLE_FLAG = {"inside": "ylzsfkb", "outside": "elzsfkb"}
+BEIJING = ZoneInfo("Asia/Shanghai")
 
 
 def mask_plate(plate):
@@ -65,7 +66,19 @@ def prepare_submission(settings, decision, vehicle, client):
     return payload
 
 
-def reconcile(journal, plate, records):
+def _complete_period(record):
+    try:
+        start = date.fromisoformat(record["yxqs"])
+        end = date.fromisoformat(record["yxqz"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    if start > end or start.isoformat() != record["yxqs"] or end.isoformat() != record["yxqz"]:
+        return None
+    return start, end
+
+
+def reconcile(journal, plate, records, now):
+    today = now.astimezone(BEIJING).date()
     for attempt in journal.unresolved(plate):
         for record in records:
             if record_type(record) != attempt["permit"]:
@@ -74,13 +87,7 @@ def reconcile(journal, plate, records):
                 continue
             state = record.get("blztmc")
             if state in {"审核通过(生效中)", "审核通过(待生效)"}:
-                try:
-                    start = date.fromisoformat(record["yxqs"])
-                    end = date.fromisoformat(record["yxqz"])
-                    valid = start <= end
-                except (TypeError, ValueError, KeyError):
-                    valid = False
-                journal.update(attempt["key"], "approved" if valid else "verified")
+                journal.update(attempt["key"], "approved" if _complete_period(record) else "verified")
                 break
             if state == "审核中":
                 journal.update(attempt["key"], "verified")
@@ -88,6 +95,13 @@ def reconcile(journal, plate, records):
             if state in {"已取消", "失败(审核不通过)"}:
                 journal.update(attempt["key"], "rejected")
                 break
+            if state in EXPIRED:
+                period = _complete_period(record)
+                # Only exact server evidence can finish an old intent. Never
+                # infer expiry from elapsed local time or delete the attempt.
+                if period and period[1] < today:
+                    journal.update(attempt["key"], "expired")
+                    break
 
 
 def describe(decision, plate):
@@ -102,13 +116,14 @@ def execute(settings, permit: str, now: datetime | None = None, submit=False, cl
     """Even a submission flag cannot override missing/ambiguous server evidence."""
     settings.validate_live()
     client = client or ApiClient(settings)
-    current_time = clock or (lambda: now if now is not None else datetime.now(ZoneInfo("Asia/Shanghai")))
+    current_time = clock or (lambda: now if now is not None else datetime.now(BEIJING))
     with exclusive(settings.data_dir), Journal(settings.data_dir) as journal:
         response = client.state()
         records = normalize(response, settings.plate)
-        reconcile(journal, settings.plate, records)
+        queried_at = current_time()
+        reconcile(journal, settings.plate, records, queried_at)
         # Network requests may cross noon or midnight; decide with the time after querying.
-        decision = plan(records, permit, current_time(), settings.earliest_time, settings.outside_lead_days)
+        decision = plan(records, permit, queried_at, settings.earliest_time, settings.outside_lead_days)
         result = describe(decision, settings.plate)
         if journal.unresolved(settings.plate):
             if decision.action == "wait":
@@ -128,6 +143,15 @@ def execute(settings, permit: str, now: datetime | None = None, submit=False, cl
             if isinstance(error, ApiError) and error.auth_expired:
                 blocked["category"] = "auth_expired"
             return blocked
+        checked_at = current_time()
+        checked_decision = plan(records, permit, checked_at,
+                                settings.earliest_time, settings.outside_lead_days)
+        if (checked_decision.action != "renew" or checked_decision.apply_date != decision.apply_date
+                or checked_at.astimezone(BEIJING).date() != queried_at.astimezone(BEIJING).date()):
+            # Do not carry server checks or an idempotency key into a changed
+            # date/window. The next run must query and validate the new plan.
+            return {**describe(checked_decision, settings.plate), "action": "blocked",
+                    "reason": "提交前办理时间或计划已变化，请重新运行并完成校验"}
         if not submit:
             return {**result, "action": "preview", "server_checks": "passed",
                     "reason": decision.reason + "；本次只预览"}
@@ -143,11 +167,14 @@ def execute(settings, permit: str, now: datetime | None = None, submit=False, cl
         journal.update(key, "accepted")
         try:
             refreshed = normalize(client.state(), settings.plate)
-            reconcile(journal, settings.plate, refreshed)
+            reconcile(journal, settings.plate, refreshed, current_time())
         except (ApiError, DomainError):
             pass # keep accepted durable: query again next time, never resubmit blindly
         outcome = journal.get(key)["state"]
         reasons = {"accepted": "接口已受理，尚未查询到对应新证；保留记录等待核验",
                    "verified": "服务端已确认申请，审批结果或有效期仍待核验",
-                   "approved": "服务端已返回审核通过的对应申请，请在 App 核对有效期"}
-        return {**result, "action": outcome, "attempt": key, "reason": reasons[outcome]}
+                   "approved": "服务端已返回审核通过的对应申请，请在 App 核对有效期",
+                   "rejected": "服务端显示对应申请已取消或审核未通过，请在 App 核对原因",
+                   "expired": "服务端已确认对应申请已过期，后续运行将重新评估续办"}
+        return {**result, "action": "wait" if outcome == "expired" else outcome,
+                "attempt": key, "reason": reasons[outcome]}

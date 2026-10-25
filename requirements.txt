@@ -1,0 +1,7 @@
+# 程序核心只用 Python 标准库，查询、续办和测试都不需要安装任何包。
+# 本文件只列可选的图形验证码识别依赖，须装进与运行解释器同版本的项目 .venv：
+#   /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv .venv
+#   .venv/bin/python -m pip install -r requirements.txt
+# 未安装时，登录改为由本人输入图形验证码。环境说明见 README「运行环境」。
+ddddocr==1.6.1 # 已在 Python 3.14 上用于真实登录
+pillow>=13.0 # 验证码预处理，直接由 jjz/captcha_ocr.py 导入

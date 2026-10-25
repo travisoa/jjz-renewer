@@ -1,7 +1,9 @@
 # 复制为 config.toml；车牌和申请模板须按本人实际情况填写。
 [api]
 base_url = "https://jjz.jtgl.beijing.gov.cn"
+# 凭证和登录文件的路径可改，但须放在 secrets/ 下或仓库之外；.gitignore 只保护这些默认位置和文件名。
 auth_file = "secrets/authorization.txt"
+login_file = "secrets/login.toml" # 可选，登录手机号和密码只放这里，不写进本文件
 timeout_seconds = 20
 
 [vehicle]

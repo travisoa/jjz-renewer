@@ -14,10 +14,12 @@ import tempfile
 import webbrowser
 from zoneinfo import ZoneInfo
 
-from .api import ApiClient, ApiError
+from .api import ApiClient, ApiError, BusinessLoginClient
 from .auth import AuthError, LoginGateway
+from .captcha_ocr import recognize_captcha
 from .config import ConfigError, load_config
-from .credentials import extract_authorization, verify_and_save
+from .credentials import (callback_ticket, save_authorization, validate_phone_login_settings,
+                          verify_phone_authorization)
 from .domain import DomainError, normalize, plan, record_type, select_vehicle
 from .runtime import AVAILABLE_FLAG, describe, execute, mask_plate
 from .storage import BusyError, Journal, exclusive
@@ -28,6 +30,22 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 
 def emit(data):
     print(json.dumps(data, ensure_ascii=False, sort_keys=True))
+
+
+def notice(message):
+    """Human-readable progress; stdout carries only the final JSON line."""
+    print(message, file=sys.stderr)
+
+
+def _remaining_count(value):
+    if type(value) is int:
+        return value if value >= 0 else None
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 def private_write(path, data):
@@ -41,15 +59,14 @@ def parser():
     root = argparse.ArgumentParser(description="进京证本地续办工具，默认只预览")
     root.add_argument("--config", default="config.toml", help="配置路径，默认 config.toml")
     sub = root.add_subparsers(dest="command", required=True)
-    sub.add_parser("init", help="创建私有配置，不覆盖已有文件")
+    sub.add_parser("init", help="按示例补建 config.toml 和 secrets/login.toml，不覆盖已有文件")
     sub.add_parser("doctor", help="本地检查，不发起网络请求")
-    sub.add_parser("auth-set", help="在本机隐藏输入并保存接口 Authorization")
+    auth_set = sub.add_parser("auth-set", help="本人在本机交互输入或手机号登录并保存业务凭证")
+    auth_set.add_argument("--login", action="store_true", help="通过本人手机号登录并验证业务凭证")
+    auth_set.add_argument("--method", choices=["password", "sms"], default="password")
     sub.add_parser("login-check", help="只读检查官方手机号登录入口及回调证书，不输入账号")
-    login = sub.add_parser("login", help="交互式手机号登录（统一认证阶段，业务凭证仍需验证）")
+    login = sub.add_parser("login", help="交互式手机号登录并查询目标车辆验证，不保存凭证")
     login.add_argument("--method", choices=["password", "sms"], default="password")
-    imported = sub.add_parser("auth-import", help="从本人本地 HAR 导入并只读验证业务凭证")
-    imported.add_argument("--har", type=Path, required=True)
-    imported.add_argument("--service-origin", required=True, help="本人核对的 HTTPS 服务源，须与配置一致")
     sub.add_parser("status", help="只读查询当前证件状态（输出已脱敏）")
     preview = sub.add_parser("plan", help="只读查询并给出续办计划")
     preview.add_argument("--permit", choices=["outside", "inside"])
@@ -97,18 +114,7 @@ def render_schedule(settings, args):
             "submission": args.submit, "permit": "outside", "loaded": False}
 
 
-def interactive_login(settings, method, gateway=None):
-    if not sys.stdin.isatty():
-        raise ConfigError("请在本机交互式终端运行 login，账号、密码和验证码不通过聊天或参数传入")
-    gateway = gateway or LoginGateway(timeout=min(settings.timeout_seconds, 20))
-    gateway.preflight() # No personal data or SMS before all HTTPS checks pass.
-    print("登录协议请在官方页面阅读：https://portal.bjt.beijing.gov.cn/m/index.html")
-    consent = input("请由本人阅读并确认同意官方登录协议；同意请输入 YES，其余输入取消： ")
-    if consent != "YES":
-        return {"action": "login_cancelled", "business_auth_verified": False}
-    phone = getpass("本人手机号（隐藏输入）: ").strip()
-    password = getpass("登录密码（隐藏输入，不保存）: ") if method == "password" else None
-    image = gateway.captcha()
+def _ask_captcha(settings, image):
     settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(prefix="login-", dir=settings.data_dir) as folder:
         suffix = ".png" if image.startswith(b"\x89PNG") else ".jpg" if image.startswith(b"\xff\xd8") else ".gif"
@@ -116,18 +122,65 @@ def interactive_login(settings, method, gateway=None):
         private_write(captcha_path, image)
         opened = webbrowser.open(captcha_path.as_uri())
         if not opened:
-            print("请在本机打开验证码图片：" + str(captcha_path))
-        captcha = getpass("请本人识别图形验证码并输入（隐藏输入）: ").strip()
-        if method == "sms":
-            # A single user-initiated send; do not auto-retry or poll for codes.
-            gateway.send_sms(phone, captcha)
-            sms_code = getpass("收到的短信验证码（隐藏输入，不保存）: ").strip()
-            result = gateway.login_sms(phone, sms_code)
-        else:
-            result = gateway.login_password(phone, password, captcha)
-        gateway.follow_callback(result)
-    return {"action": "unified_authentication_completed", "business_auth_verified": False,
-            "reason": "统一认证阶段已完成；业务凭证转换尚未验证，现有办理凭证未修改"}
+            notice("请打开验证码图片：" + str(captcha_path))
+        return getpass("请本人识别图形验证码并输入（隐藏输入）: ").strip()
+
+
+def _with_graphic_captcha(gateway, settings, submit):
+    """Try a local guess up to three times, then ask the user once."""
+    for _ in range(3):
+        image = gateway.captcha()
+        captcha = recognize_captcha(image)
+        if not captcha:
+            return submit(_ask_captcha(settings, image))
+        notice("图形验证码已由本地识别填写。")
+        try:
+            return submit(captcha)
+        except AuthError as error:
+            if error.category != "verification":
+                raise
+            notice("图形验证码未通过，正在重新识别。")
+    return submit(_ask_captcha(settings, gateway.captcha()))
+
+
+def interactive_login(settings, method, gateway=None, *, save=False):
+    if not sys.stdin.isatty():
+        raise ConfigError("请在本机交互式终端运行 login，账号、密码和验证码不通过聊天或参数传入")
+    validate_phone_login_settings(settings)
+    phone, password = settings.read_login()
+    password = password if method == "password" else None
+    if phone and method == "password" and not password:
+        raise ConfigError("已配置 login.phone 时，密码登录还需要在 secrets/login.toml 填写 login.password。")
+    gateway = gateway or LoginGateway(timeout=min(settings.timeout_seconds, 20))
+    gateway.preflight() # No personal data or SMS before all HTTPS checks pass.
+    # Using this project means the user accepts the official login agreement.
+    notice("登录协议请在官方页面阅读：https://portal.bjt.beijing.gov.cn/m/index.html")
+    notice("使用本项目即视为已阅读并同意官方登录协议，继续登录。")
+    if not phone:
+        phone = getpass("本人手机号（隐藏输入）: ").strip()
+    if method == "password" and not password:
+        password = getpass("登录密码（隐藏输入，不保存）: ")
+    if method == "sms":
+        # A wrong graphic captcha is retried locally. A sent SMS is never requested again.
+        _with_graphic_captcha(gateway, settings, lambda captcha: gateway.send_sms(phone, captcha))
+        sms_code = getpass("收到的短信验证码（隐藏输入，不保存）: ").strip()
+        result = gateway.login_sms(phone, sms_code)
+    else:
+        result = _with_graphic_captcha(
+            gateway, settings, lambda captcha: gateway.login_password(phone, password, captcha))
+    final_url, _ = gateway.take_callback(result)
+    landing_path, ticket, state = callback_ticket(final_url)
+    authorization = BusinessLoginClient(timeout=min(settings.timeout_seconds, 20)).exchange(
+        landing_path, ticket, state)
+    records = verify_phone_authorization(settings, authorization)
+    summary = {"action": "business_login_verified", "business_auth_verified": True,
+               "credential_saved": False, "vehicle": mask_plate(settings.plate), "records": records}
+    if save:
+        # Saved only after the in-memory credential has queried the target vehicle.
+        with exclusive(settings.data_dir):
+            save_authorization(settings, authorization)
+        summary["credential_saved"] = True
+    return summary
 
 
 def main(argv=None):
@@ -136,8 +189,18 @@ def main(argv=None):
     try:
         config_path = Path(args.config).expanduser().resolve()
         if args.command == "init":
-            private_write(config_path, files("jjz").joinpath("config.example.toml").read_bytes())
-            emit({"action": "config_created", "path": str(config_path), "submission": False})
+            # Create each missing private file from its packaged example; never overwrite.
+            # An existing config decides where its login file lives.
+            login_path = (load_config(config_path).login_file if config_path.exists()
+                          else config_path.parent / "secrets/login.toml")
+            templates = {config_path: "config.example.toml", login_path: "login.example.toml"}
+            created = [path for path in templates if not path.exists()]
+            for path in created:
+                private_write(path, files("jjz").joinpath(templates[path]).read_bytes())
+            if not created:
+                emit({"action": "config_exists", "created": [], "reason": "配置文件和登录文件都已存在，未做修改"})
+                return 0
+            emit({"action": "config_created", "created": [str(path) for path in created], "submission": False})
             return 0
         if args.command == "login-check":
             emit({"action": "login_preflight", **LoginGateway().preflight(),
@@ -146,12 +209,6 @@ def main(argv=None):
         settings = load_config(config_path)
         if args.command == "login":
             result = interactive_login(settings, args.method)
-            emit(result)
-            return 2 if result["action"] == "unified_authentication_completed" else 0
-        if args.command == "auth-import":
-            token = extract_authorization(args.har, args.service_origin)
-            with exclusive(settings.data_dir):
-                result = verify_and_save(settings, args.service_origin, token)
             emit(result)
             return 0
         if args.command == "doctor":
@@ -172,16 +229,14 @@ def main(argv=None):
         if args.command == "auth-set":
             if not sys.stdin.isatty():
                 raise ConfigError("请在本机交互式终端运行 auth-set，避免明文进入命令和日志")
+            if args.login:
+                emit(interactive_login(settings, args.method, save=True))
+                return 0
             token = getpass("Authorization（隐藏输入，不会打印）: ").strip()
             if not token or "\n" in token or "\r" in token:
                 raise ConfigError("Authorization 为空或包含换行")
-            # Replace only the authorization file explicitly targeted by this command.
-            path = settings.auth_file
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as target:
-                os.fchmod(target.fileno(), 0o600)
-                target.write(token)
+            with exclusive(settings.data_dir):
+                save_authorization(settings, token)
             emit({"action": "authorization_saved", "mode": "0600"})
             return 0
         if args.command == "schedule":
@@ -228,7 +283,7 @@ def main(argv=None):
                      "start": row.get("yxqs"), "end": row.get("yxqz")} for row in records],
                     # The official permit-type page enables a type only when its flag is true.
                     "can_apply": {permit: vehicle.get(flag) is True for permit, flag in AVAILABLE_FLAG.items()},
-                    "inside_remaining": int(remaining) if isinstance(remaining, str) and remaining.isdigit() else None}
+                    "inside_remaining": _remaining_count(remaining)}
             else:
                 result = describe(plan(records, permit, now, settings.earliest_time,
                                        settings.outside_lead_days), settings.plate)

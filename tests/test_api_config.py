@@ -46,6 +46,38 @@ class ConfigTests(unittest.TestCase):
         path = self.write_config('[vehicle]\nplate="冀A00000"\n')
         return load_config(path)
 
+    def write_login(self, body, mode=0o600):
+        target = self.root / "secrets/login.toml"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+        target.chmod(mode)
+        return target
+
+    def test_login_section_is_rejected_in_main_config(self):
+        path = self.write_config('[login]\nphone="13800000000"\npassword="SYNTHETIC_PASSWORD"\n')
+        with self.assertRaises(ConfigError) as error:
+            load_config(path)
+        self.assertIn("secrets/login.toml", str(error.exception))
+        self.assertNotIn("SYNTHETIC_PASSWORD", str(error.exception))
+
+    def test_login_file_is_read_only_on_request_and_errors_hide_values(self):
+        settings = self.settings()
+        self.assertEqual(settings.login_file, self.root / "secrets/login.toml")
+        self.assertEqual(settings.read_login(), ("", ""))
+        self.write_login('[login]\nphone=" 13800000000 "\npassword="SYNTHETIC_PASSWORD"\n')
+        self.assertEqual(settings.read_login(), ("13800000000", "SYNTHETIC_PASSWORD"))
+        self.assertNotIn("SYNTHETIC_PASSWORD", repr(settings))
+        for body, mode in (('[login]\npassword="SYNTHETIC_PASSWORD\\nNEXT"\n', 0o600),
+                           ('[login]\npassword="SYNTHETIC_PASSWORD"\nextra="x"\n', 0o600),
+                           ('[api]\nbase_url="SYNTHETIC_PASSWORD"\n', 0o600),
+                           ('[login]\npassword="SYNTHETIC_PASSWORD"\n', 0o644),
+                           ('[login]\npassword="SYNTHETIC_PASSWORD\n', 0o600)):
+            with self.subTest(body=body, mode=mode):
+                self.write_login(body, mode)
+                with self.assertRaises(ConfigError) as error:
+                    settings.read_login()
+                self.assertNotIn("SYNTHETIC_PASSWORD", str(error.exception))
+
     def test_offline_config_allows_empty_service_and_resolves_paths(self):
         settings = self.settings()
         self.assertEqual(settings.base_url, "")

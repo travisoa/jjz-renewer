@@ -64,6 +64,7 @@ class Settings:
     data_dir: Path = Path("data")
     application: dict = field(default_factory=dict)
     inside_application: dict = field(default_factory=dict)
+    login_file: Path | None = None
 
     def read_authorization(self) -> str:
         """Read a single local header value without ever including it in errors."""
@@ -84,12 +85,45 @@ class Settings:
             raise ConfigError("凭证必须是 ASCII Authorization 值。") from None
         return value
 
-    def validate_live(self) -> None:
+    def read_login(self) -> tuple[str, str]:
+        """Read the private phone/password pair; only login commands call this."""
+        if self.login_file is None:
+            return "", ""
+        try:
+            info = self.login_file.stat()
+        except FileNotFoundError:
+            return "", ""
+        except OSError:
+            raise ConfigError("无法读取本地登录配置文件。") from None
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise ConfigError("登录配置文件必须是普通文件，且仅当前用户可读写（chmod 600）。")
+        if info.st_size > 16_384:
+            raise ConfigError("登录配置文件过大。")
+        try:
+            with self.login_file.open("rb") as stream:
+                data = tomllib.load(stream)
+        except (OSError, tomllib.TOMLDecodeError):
+            raise ConfigError("无法读取登录配置文件，请检查 TOML 格式。") from None
+        login = data.get("login", {})
+        if data.keys() - {"login"} or not isinstance(login, dict) or login.keys() - {"phone", "password"}:
+            raise ConfigError("登录配置文件只能包含 [login] 表的 phone 和 password。")
+        phone, password = login.get("phone", ""), login.get("password", "")
+        if not isinstance(phone, str) or not isinstance(password, str):
+            raise ConfigError("login.phone 和 login.password 必须是字符串。")
+        phone = phone.strip()
+        if any(ord(c) < 32 or ord(c) == 127 for c in phone + password):
+            raise ConfigError("login.phone 和 login.password 必须是单行文本。")
+        return phone, password
+
+    def validate_service(self) -> None:
         if not self.base_url:
             raise ConfigError("尚未配置 api.base_url。")
         _origin(self.base_url)
         if not self.plate:
             raise ConfigError("尚未配置 vehicle.plate。")
+
+    def validate_live(self) -> None:
+        self.validate_service()
         self.read_authorization()
 
     def application_for(self, permit: str = "outside") -> dict:
@@ -165,10 +199,14 @@ def load_config(path: Path | str) -> Settings:
     storage = section("storage")
     application = section("application")
     inside_application = section("inside_application")
+    if "login" in config:
+        # Keep the account password out of the file that every command loads.
+        raise ConfigError("登录手机号和密码只能放在 secrets/login.toml，请把 config.toml 中的 [login] 整节移过去。")
     base_url = _origin(string(api, "base_url", "", "api.base_url"))
     auth_file = string(api, "auth_file", "secrets/authorization.txt", "api.auth_file")
+    login_file = string(api, "login_file", "secrets/login.toml", "api.login_file")
     data_dir = string(storage, "data_dir", "data", "storage.data_dir")
-    if not auth_file.strip() or not data_dir.strip():
+    if not auth_file.strip() or not login_file.strip() or not data_dir.strip():
         raise ConfigError("凭证与数据路径不能为空。")
     plate = string(vehicle, "plate", "", "vehicle.plate").strip().upper()
     if any(ord(c) < 32 for c in plate):
@@ -199,4 +237,5 @@ def load_config(path: Path | str) -> Settings:
         outside_lead_days=lead, submission_enabled=enabled,
         timeout_seconds=float(timeout), data_dir=local_path(data_dir),
         application=dict(application), inside_application=dict(inside_application),
+        login_file=local_path(login_file),
     )

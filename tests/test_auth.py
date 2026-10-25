@@ -5,7 +5,11 @@ from hashlib import md5
 from http.client import IncompleteRead
 import io
 import json
+from pathlib import Path
+import shutil
 import ssl
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
@@ -13,15 +17,12 @@ from urllib.parse import parse_qs, urlencode
 from urllib.request import Request
 
 from jjz.auth import (
-    API_ROOT, CALLBACK_URL, ENTRY_URL, MAX_RESPONSE_BYTES, PORTAL_ORIGIN,
+    API_ROOT, BUSINESS_ENTRY_URL, CALLBACK_URL, ENTRY_URL, MAX_RESPONSE_BYTES, PORTAL_ORIGIN,
     AuthError, LoginGateway, _OfficialRedirect, _encrypt, official_url,
 )
 
-try:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import padding, rsa
-except ImportError:
-    serialization = padding = rsa = None
+# Keys are made and checked with the same openssl command the program uses.
+OPENSSL = shutil.which("openssl")
 
 
 class Response(io.BytesIO):
@@ -51,15 +52,36 @@ def envelope(data=None, code=0, **extra):
 
 
 class UrlTests(unittest.TestCase):
+    def test_entry_uses_current_production_client_and_ssp_callback(self):
+        query = parse_qs(ENTRY_URL.split("?", 1)[1])
+        self.assertEqual(query["client_id"], ["100100001423"])
+        self.assertEqual(query["redirect_uri"], [CALLBACK_URL])
+        self.assertEqual(query["state"], ["300001"])
+
     def test_rejects_nonofficial_or_malformed_destinations(self):
         values = ("http://bjt.beijing.gov.cn/", "https://example.com/",
                   "https://bjt.beijing.gov.cn.evil.test/", "https://user@bjt.beijing.gov.cn/",
                   "https://bjt.beijing.gov.cn:444/", "https://bjt.beijing.gov.cn\\evil/",
-                  "https://bjt.beijing.gov.cn/\n", None, [], "")
+                  "https://bjt.beijing.gov.cn/\n", "https://bjjj.jtgl.beijing.gov.cn/",
+                  "https://jjz.jtgl.beijing.gov.cn/", "https://ssp.jtgl.beijing.gov.cn:2443/",
+                  "https://bjt.beijing.gov.cn:0/", None, [], "")
         for value in values:
             with self.subTest(value=value), self.assertRaises(AuthError):
                 official_url(value)
         self.assertEqual(official_url(CALLBACK_URL), CALLBACK_URL)
+        self.assertEqual(official_url(BUSINESS_ENTRY_URL), BUSINESS_ENTRY_URL)
+
+    def test_cross_origin_redirect_drops_credentials_and_private_referrer(self):
+        handler = _OfficialRedirect()
+        post = Request(API_ROOT + "inner/m/login/doUserLoginByPwd", b"secret-body",
+                       {"Content-Type": "application/x-www-form-urlencoded", "Authorization": "SECRET_TOKEN",
+                        "Cookie": "SECRET_COOKIE", "Origin": PORTAL_ORIGIN,
+                        "Referer": PORTAL_ORIGIN + "/?ticket=SECRET_TICKET"}, method="POST")
+        for code in (302, 303):
+            redirected = handler.redirect_request(post, None, code, "redirect", {}, CALLBACK_URL)
+            self.assertIsNone(redirected.data)
+            for header in ("Authorization", "Cookie", "Origin", "Referer"):
+                self.assertFalse(redirected.has_header(header))
 
     def test_redirects_validate_before_forwarding(self):
         handler = _OfficialRedirect()
@@ -78,37 +100,91 @@ class UrlTests(unittest.TestCase):
             self.assertFalse(redirected.has_header("Content-Type"))
 
 
-@unittest.skipIf(rsa is None, "cryptography optional login dependency unavailable")
+class EncryptionBoundaryTests(unittest.TestCase):
+    def test_missing_openssl_is_a_sanitized_dependency_error(self):
+        with patch("jjz.auth.shutil.which", return_value=None), self.assertRaises(AuthError) as error:
+            _encrypt("SYNTHETIC_PUBLIC_KEY", {"password": "SYNTHETIC_PASSWORD"})
+        self.assertEqual(error.exception.category, "dependency")
+        self.assertNotIn("SYNTHETIC_PASSWORD", str(error.exception))
+
+    def test_plaintext_uses_stdin_and_public_key_is_the_only_temporary_file(self):
+        public_key = base64.b64encode(b"\0" * 128).decode()
+        value = {"userIdentity": "13800000000", "smsCode": "123456"}
+        calls = []
+
+        def operation(arguments, **kwargs):
+            calls.append((arguments, kwargs))
+            self.assertNotIn("13800000000", " ".join(arguments))
+            self.assertNotIn("123456", " ".join(arguments))
+            self.assertEqual(kwargs["timeout"], 10)
+            if arguments[1] == "pkey":
+                pem = Path(arguments[arguments.index("-in") + 1]).read_bytes()
+                self.assertTrue(pem.startswith(b"-----BEGIN PUBLIC KEY-----"))
+                self.assertNotIn(b"13800000000", pem)
+                return subprocess.CompletedProcess(arguments, 0, b"Public-Key: (1024 bit)\nModulus:\nExponent: 65537\n", b"")
+            self.assertEqual(json.loads(kwargs["input"]), value)
+            return subprocess.CompletedProcess(arguments, 0, b"x" * 128, b"")
+
+        with patch("jjz.auth.shutil.which", return_value="/usr/bin/openssl"), \
+                patch("jjz.auth.subprocess.run", side_effect=operation):
+            encrypted = _encrypt(public_key, value)
+        self.assertEqual(base64.b64decode(encrypted), b"x" * 128)
+        self.assertEqual(len(calls), 2)
+        public_path = Path(calls[0][0][calls[0][0].index("-in") + 1])
+        self.assertFalse(public_path.exists())
+
+    def test_openssl_error_output_never_reaches_user_message(self):
+        public_key = base64.b64encode(b"\0" * 128).decode()
+        failed = subprocess.CompletedProcess([], 1, b"", b"SYNTHETIC_PASSWORD_TOKEN")
+        with patch("jjz.auth.shutil.which", return_value="/usr/bin/openssl"), \
+                patch("jjz.auth.subprocess.run", return_value=failed), self.assertRaises(AuthError) as error:
+            _encrypt(public_key, {"password": "SYNTHETIC_PASSWORD_TOKEN"})
+        self.assertNotIn("SYNTHETIC_PASSWORD_TOKEN", str(error.exception))
+
+
+@unittest.skipIf(OPENSSL is None, "openssl command unavailable")
 class GatewayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
-        cls.public_key = base64.b64encode(cls.key.public_key().public_bytes(
-            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo,
-        )).decode()
+        folder = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(folder.cleanup)
+        cls.private_key = Path(folder.name) / "private.pem"
+        subprocess.run([OPENSSL, "genrsa", "-out", str(cls.private_key), "1024"],
+                       capture_output=True, check=True)
+        public = subprocess.run([OPENSSL, "rsa", "-in", str(cls.private_key), "-pubout", "-outform", "DER"],
+                                capture_output=True, check=True).stdout
+        cls.public_key = base64.b64encode(public).decode()
+
+    @classmethod
+    def decrypt(cls, ciphertext):
+        size = 1024 // 8
+        return b"".join(subprocess.run(
+            [OPENSSL, "pkeyutl", "-decrypt", "-inkey", str(cls.private_key), "-pkeyopt", "rsa_padding_mode:pkcs1"],
+            input=ciphertext[i:i + size], capture_output=True, check=True).stdout
+            for i in range(0, len(ciphertext), size))
 
     def ready(self, *responses):
         gateway = LoginGateway()
         # Preserve raw '+' exactly as the live official redirect does.
         login_url = PORTAL_ORIGIN + "/m/index.html?pubKey=" + self.public_key
-        gateway.opener = FakeOpener(Response(b"public html", login_url), Response(), *responses)
+        gateway.opener = FakeOpener(Response(b"public html", login_url), Response(),
+                                    Response(b"business html", BUSINESS_ENTRY_URL), *responses)
         self.assertEqual(gateway.preflight(), {
-            "entry_reachable": True, "callback_reachable": True, "certificate_valid": True,
+            "entry_reachable": True, "callback_reachable": True, "business_reachable": True,
+            "certificate_valid": True,
         })
         return gateway
 
     def decrypt_fields(self, request):
         fields = parse_qs(request.data.decode())
-        encrypted = base64.b64decode(fields["encryptData"][0])
-        size = self.key.key_size // 8
-        plaintext = b"".join(self.key.decrypt(encrypted[i:i + size], padding.PKCS1v15())
-                             for i in range(0, len(encrypted), size))
+        plaintext = self.decrypt(base64.b64decode(fields["encryptData"][0]))
         return fields, json.loads(plaintext)
 
     def test_preflight_uses_same_cookie_opener_and_raw_base64_key(self):
         gateway = self.ready()
         self.assertEqual(gateway._public_key, self.public_key)
-        self.assertEqual([call[0].full_url for call in gateway.opener.calls], [ENTRY_URL, CALLBACK_URL])
+        self.assertEqual([call[0].full_url for call in gateway.opener.calls],
+                         [ENTRY_URL, CALLBACK_URL, BUSINESS_ENTRY_URL])
         self.assertTrue(all(call[1] == 20 for call in gateway.opener.calls))
 
     def test_preflight_allows_callback_missing_auth_code_http_400(self):
@@ -116,7 +192,7 @@ class GatewayTests(unittest.TestCase):
         callback = HTTPError(CALLBACK_URL, 400, "Missing auth code", {}, io.BytesIO(b"missing code"))
         gateway.opener = FakeOpener(
             Response(b"public html", PORTAL_ORIGIN + "/m/index.html?" + urlencode({"pubKey": self.public_key})),
-            callback,
+            callback, Response(b"business html", BUSINESS_ENTRY_URL),
         )
         self.assertTrue(gateway.preflight()["certificate_valid"])
 
@@ -148,6 +224,21 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaises(AuthError):
             gateway.send_sms("13800000000", "abcd")
         self.assertEqual(len(gateway.opener.calls), 1)
+
+    def test_business_certificate_failure_also_blocks_credentials_and_sms(self):
+        gateway = LoginGateway()
+        gateway.opener = FakeOpener(
+            Response(b"html", PORTAL_ORIGIN + "/m/index.html?pubKey=" + self.public_key),
+            Response(), URLError(ssl.SSLCertVerificationError("PRIVATE_CERT_DETAILS")),
+        )
+        with self.assertRaises(AuthError) as error:
+            gateway.preflight()
+        self.assertEqual(error.exception.category, "certificate")
+        for operation, arguments in ((gateway.login_password, ("13800000000", "secret", "ABCD")),
+                                     (gateway.send_sms, ("13800000000", "ABCD"))):
+            with self.assertRaises(AuthError):
+                operation(*arguments)
+        self.assertEqual(len(gateway.opener.calls), 3)
 
     def test_preflight_rejects_missing_duplicate_or_wrong_landing_key(self):
         for url in (PORTAL_ORIGIN + "/m/index.html", PORTAL_ORIGIN + "/m/index.html?pubKey=",
@@ -199,7 +290,7 @@ class GatewayTests(unittest.TestCase):
 
     def test_login_requires_real_name_level_and_official_redirect(self):
         examples = (
-            ({"certLevel": 1, "grantLevel": 3, "redirectUrl": CALLBACK_URL}, "verification"),
+            ({"certLevel": 1, "grantLevel": 3, "redirectUrl": CALLBACK_URL}, "identity"),
             ({"certLevel": None, "grantLevel": 3, "redirectUrl": CALLBACK_URL}, "protocol"),
             ({"certLevel": True, "grantLevel": 3, "redirectUrl": CALLBACK_URL}, "protocol"),
             ({"certLevel": 3, "grantLevel": 3, "redirectUrl": "https://evil.test/?token=secret"}, "protocol"),
@@ -232,7 +323,7 @@ class GatewayTests(unittest.TestCase):
                                                 "redirectUrl": CALLBACK_URL})))
         with self.assertRaises(AuthError) as error:
             gateway.login_sms("13800000000", "123456")
-        self.assertEqual(error.exception.category, "verification")
+        self.assertEqual(error.exception.category, "identity")
 
     def test_unknown_or_mixed_certification_formats_cannot_claim_success(self):
         for cert, grant in (("L4", "L3"), ("L3", 2), (3, "L2"), (99, 3), ("L00", "L1")):
@@ -253,11 +344,17 @@ class GatewayTests(unittest.TestCase):
                 self.assertEqual(error.exception.category, "protocol")
 
     def test_follow_callback_does_not_extract_or_promote_token(self):
-        landing = "https://bjjj.jtgl.beijing.gov.cn/uc/ucfront/userauth?token=unverified-auth-token"
+        landing = CALLBACK_URL + "?token=unverified-auth-token"
         gateway = self.ready(Response(b"<html>official business page</html>", landing))
         result = gateway.follow_callback({"redirect_url": CALLBACK_URL + "?code=private-ticket"})
         self.assertEqual(result, {"final_url": landing})
         self.assertNotIn("authorization", result)
+
+    def test_take_callback_keeps_response_only_in_memory(self):
+        landing = BUSINESS_ENTRY_URL + "?token=SYNTHETIC_TICKET&state=300001"
+        gateway = self.ready(Response(b"SYNTHETIC_BUSINESS_HTML", landing))
+        result = gateway.take_callback({"redirect_url": CALLBACK_URL + "?code=SYNTHETIC_CODE"})
+        self.assertEqual(result, (landing, b"SYNTHETIC_BUSINESS_HTML"))
 
     def test_invalid_inputs_never_send_requests(self):
         gateway = self.ready()
@@ -267,7 +364,7 @@ class GatewayTests(unittest.TestCase):
                                   (gateway.login_sms, ("13800000000", "abc1"))):
             with self.subTest(method=method), self.assertRaises(AuthError):
                 method(*arguments)
-        self.assertEqual(len(gateway.opener.calls), 2)
+        self.assertEqual(len(gateway.opener.calls), 3)
 
     def test_oversized_response_and_interrupted_read_are_safe(self):
         gateway = self.ready(Response(b"x" * (MAX_RESPONSE_BYTES + 1)))
@@ -284,10 +381,8 @@ class GatewayTests(unittest.TestCase):
     def test_long_unicode_rsa_is_concatenated_blocks(self):
         value = {"text": "多字节内容" * 100}
         ciphertext = base64.b64decode(_encrypt(self.public_key, value))
-        size = self.key.key_size // 8
-        recovered = b"".join(self.key.decrypt(ciphertext[i:i + size], padding.PKCS1v15())
-                             for i in range(0, len(ciphertext), size))
-        self.assertEqual(json.loads(recovered), value)
+        self.assertGreater(len(ciphertext), 1024 // 8)
+        self.assertEqual(json.loads(self.decrypt(ciphertext)), value)
 
     def test_invalid_public_key_is_sanitized_and_never_sent(self):
         gateway = self.ready()
@@ -295,7 +390,7 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaises(AuthError) as error:
             gateway.login_sms("13800000000", "123456")
         self.assertNotIn("SYNTHETIC_INVALID_KEY", str(error.exception))
-        self.assertEqual(len(gateway.opener.calls), 2)
+        self.assertEqual(len(gateway.opener.calls), 3)
 
 
 if __name__ == "__main__":

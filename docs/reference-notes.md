@@ -30,12 +30,23 @@
 - 申请体不再带 `applyIdOld`，也不发百度坐标 `sqdzbdjd`/`sqdzbdwd`。
 - 车辆字段取自查询结果里的车辆对象：`vId`、`hphm`、`hpzl`、`ylzsfkb`、`elzsfkb`、`ylzmc`、`elzmc`、`ylzqyms`、`elzqyms`、`cllx`。其中 `elzsfkb`/`ylzsfkb` 是服务端给出的"六环外/六环内当前可办"标志，选证页据此决定能否选择。
 - 驾驶人信息取自 `getJsrxx`（`jsrxm`、`jszh`、`dabh`），不是取自证件记录。
-- 页面新增目的地区县名 `area`、目的地坐标 `jjdzgdjd`/`jjdzgdwd`，以及 `jingState`（固定为空串）。`sfzj=1` 时发在京地址 `zjxxdz` 及坐标，并清空道路字段；`sfzj=0` 时发道路 `jjlk`、`jjlkmc` 及坐标 `jjlkgdjd`/`jjlkgdwd`，并清空在京地址字段。
+- 页面提交目的地区县名 `area`、目的地坐标 `jjdzgdjd`/`jjdzgdwd`，以及 `jingState`（固定为空串）。`sfzj=1` 时发在京地址 `zjxxdz` 及坐标，并清空道路字段；`sfzj=0` 时发道路 `jjlk`、`jjlkmc` 及坐标 `jjlkgdjd`/`jjlkgdwd`，并清空在京地址字段。
 - `sqdzgdjd`/`sqdzgdwd` 是提交时手机的当前定位，不是目的地坐标。`jjmd`/`jjmdmc` 可多选，用逗号拼接。
 - 提交前依次调用：`applyVehicleCheck`（`data` 为 `"200"` 才继续）、`getJsrxx`、`getConfigRecordInfo`（取同行人开关 `txrkg`）、`applyCheckNum`、`checkHandle`（返回可选进京日期 `jjrqs`，格式 `YYYY-MM-DD`）、`checkInputRoadInfo`（`data` 不为 `"0"` 时要求填写行驶路线 `xslx`）。
 - 区县、进京目的、进京道路的代码来自 `/pro/ucDicController/queryDic`，`type` 分别为 `qjxz`、`jjmd`、`jjlk`（`jjlk` 需带 `vId`）。
 
 ## AUTH 来源与有效期
+
+当前手机号登录按以下官方公开资料实现：
+
+- [H5 生产配置脚本](https://jjz.jtgl.beijing.gov.cn:2443/H5_NewUC/static/js/index.f33133eb.js)的配置模块实际选择 `prod_new`。统一认证使用 `client_id=100100001423`、回调 `https://ssp.jtgl.beijing.gov.cn/sso/callback/userauth`、`state=300001`；业务和认证根路径分别为 `https://jjz.jtgl.beijing.gov.cn:2443/pro/`、`https://jjz.jtgl.beijing.gov.cn:2443/auth/`。
+- [用户分中心落地页](https://jjz.jtgl.beijing.gov.cn:2443/login_h5_byUserCenter.html)从实际 URL 读取唯一 `token` 和 `state`，调用 `POST /auth/userController/loginUserByUserCenter?state=…`，请求体为 JSON `{token, state}`。它将成功响应交给 `/H5_NewUC/`。
+- [通用落地页](https://jjz.jtgl.beijing.gov.cn:2443/login_h5.html)使用相同的票据字段，但调用 `POST /auth/userController/loginUser?state=…`。程序只按官方实际返回的落地页选择接口，不猜测或混用两类票据。
+- 两份页面均通过 `Content-Type: application/json` 发送票据，并设置 `source`。只有 `state` 属于页面列出的渠道码时才取其原值，否则使用页面声明的 H5 默认渠道；当前生产 `state=300001` 不属于该渠道码表，因此走 H5 默认渠道。URL 中的票据按 `decodeURIComponent` 语义解析，保留原样 `+`。缺失 `state` 才使用页面默认值 `101000004071`。
+- [业务首页脚本](https://jjz.jtgl.beijing.gov.cn:2443/H5_NewUC/static/js/pages-bzzx-bzzx.f2a22f75.js)解码交换响应，取 `data.accessToken` 作为后续请求头 `Authorization`。认证 URL 中的 token、SSP 自身的登录态和该业务凭证不能互换。
+- 程序以新业务凭证只读查询配置目标车辆后，才输出 `business_login_verified`。`login` 只把凭证保留在内存；`auth-set --login` 在车辆核验成功后直接以 600 权限原子保存，不读取或复制已有凭证。未知落地页、缺失票据、交换失败或车辆不匹配均停止并保留原凭证。
+
+手机号登录通过 Python 标准库调用系统的 `openssl` 命令完成官方 RSA 加密，不依赖额外 Python 加密库。密码登录可从私有文件 `secrets/login.toml` 读取手机号和密码。图形验证码在当前解释器能导入 `ddddocr` 时直接使用它，否则使用项目 `.venv` 中的安装；两者都没有时尝试 `tesseract`，仍无可用结果时由本人输入。程序不绕过实名验证、不自动重试已发出的短信，也没有自动刷新或无人值守重新登录协议。
 
 作者在 [issue #13 的说明](https://github.com/bihongfly/jinjingzheng/issues/13#issuecomment-3722585683)（2026-01-08）明确：京通登录返回的 token 不是续签使用的 AUTH，需要从上述办理请求的 `Authorization` 请求头获得。通用京通登录成功不能作为续签凭证有效的证据。
 
@@ -58,3 +69,5 @@ README 曾声称测试中 AUTH 不失效，但作者在 [issue #2](https://githu
 研究时仓库根目录未发现标准 LICENSE。README 对商用、转载等有自定义限制；本项目独立实现，只引用公开协议线索与流程，不整体复制远端代码。
 
 参考项目部分仅为公开内容的只读研究。与官方 H5 的对照用到了本人凭证，但只调用了查询、字典和提交前校验接口；凭证寿命未实测。未调用提交接口，未提交任何进京证申请。
+
+当前生产回调和 2443 业务源均通过正常 TLS 检查；另一个回调主机 `bjjj.jtgl.beijing.gov.cn` 的证书已过期，不代表当前生产入口不可用。手机号登录各环节的在线验证情况见 [办理凭证获取与核验](login-usage.md#验证范围与故障处理)，此处不再重复。

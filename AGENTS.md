@@ -5,13 +5,13 @@
 ## 项目概况
 
 - 标准库 Python CLI，入口 `python3 -m jjz`，需在项目根目录运行。本机解释器是 `/opt/homebrew/opt/python@3.14/bin/python3.14`，定时任务固定使用它。
-- `jjz/`：`api.py` 官方接口、`config.py` 配置与申请模板校验、`domain.py` 记录筛选与续办计划、`runtime.py` 执行与提交保护、`storage.py` SQLite 提交记录与进程锁、`credentials.py` 凭证导入、`auth.py` 统一认证登录（当前取不到办理凭证）、`cli.py` 命令行。
-- `config.toml`、`secrets/`、`data/` 是本机私有文件，已列入 `.gitignore`。`data/journal.sqlite3` 是提交保护记录。
+- `jjz/`：`api.py` 官方接口与业务登录交换、`config.py` 配置与申请模板校验、`domain.py` 记录筛选与续办计划、`runtime.py` 执行与提交保护、`storage.py` SQLite 提交记录与进程锁、`credentials.py` 凭证核验与保存、`auth.py` 手机号统一认证、`cli.py` 命令行。手机号加密通过标准库调用本机 OpenSSL。核心无第三方 Python 依赖；可选的验证码识别依赖列在 `requirements.txt`，装在同版本 `.venv`。环境要求见 README「运行环境」。
+- `config.toml`、`secrets/`、`data/` 是本机私有文件，已列入 `.gitignore`；对应示例是 `jjz/config.example.toml` 和 `jjz/login.example.toml`，`init` 只补建缺少的文件。`config.toml` 不放账号密码，代理可以读取它排查问题（个人信息按规则 6 处理）。`data/journal.sqlite3` 是提交保护记录。
 - 背景资料：[README](README.md)、[办理凭证获取](docs/login-usage.md)、[参考项目及与官方 H5 的差异](docs/reference-notes.md)。
 
 ## 硬性规则
 
-1. **凭证**：不读取、打印或复制 `secrets/authorization.txt` 的内容，也不把它放进命令参数、日志、聊天、代码或代理记忆。更新凭证只能由用户本人在交互式终端运行 `python3 -m jjz auth-set` 输入；代理可以在用户的终端标签页里替用户启动这个命令。办理凭证只来自用户本人 App 的查询请求，获取方法见 [docs/login-usage.md](docs/login-usage.md)。
+1. **凭证**：不读取、打印或复制 `secrets/` 下任何文件的内容（业务凭证 `authorization.txt`、登录手机号和密码 `login.toml`），更不把这些值放进命令参数、日志、聊天、代码或代理记忆。更新业务凭证只能由用户本人在交互式终端运行 `python3 -m jjz auth-set` 输入本人 App 查询请求里的凭证，或运行 `python3 -m jjz auth-set --login --method password`（也支持 `sms`），完成手机号登录和目标车辆查询核验后直接保存。用户使用本项目即视为同意相关协议，程序内所有 `yes` 确认默认同意，不再询问。密码登录在 `secrets/login.toml` 配置了手机号和密码时由程序自行读取，只有 `login` 和 `auth-set --login` 会读它。图形验证码由本机 OCR 识别并填入；未识别出结果，或官方连续三次判定验证码错误时，才由本人输入。代理可以在用户的终端标签页里启动这些命令，但不得替用户输入账号、密码或验证码，也不得读取终端里的验证码。`login` 只验证、不保存。获取方法见 [docs/login-usage.md](docs/login-usage.md)。
 2. **提交**：只有 `run --submit` 会提交申请，且要求 `[renewal].submission_enabled = true`。除非用户在当次对话中明确要求，代理不得把这个开关改成 `true`，也不得生成或加载带 `--submit` 的定时任务。
 3. **不绕过保护**：程序返回 `blocked`、`uncertain`、`rejected` 时停下并报告原因。不要关闭证书校验，不要跳过或伪造服务端校验，不要为了放行而修改提交保护逻辑。
 4. **六环内证**：每车每年最多 12 次。只在用户当次明确要求时办理，办理前先用 `status` 报告 `inside_remaining` 并请用户确认。
@@ -72,12 +72,11 @@ Mac 必须开机、用户登录且联网；睡眠时任务不运行。
 
 ## 排错
 
-- 证书校验失败：先检查本机 Surge 有没有对 `api.base_url` 的主机开启 MITM（证书签发者显示为 "Surge Generated CA"）。Surge 配置可能从 iPhone 同步过来。应删除对应的 MITM 主机名，不要在程序里关闭证书校验。
 - `doctor` 只报内证模板未填写时，不影响六环外的自动续办。
 
 ## 修改代码
 
-- 只用标准库，延续现有写法：错误消息固定、可安全展示，不输出原始响应、凭证或个人信息。
+- 只用标准库（可选的验证码识别除外，依赖记在 `requirements.txt` 和 `pyproject.toml` 的 `ocr`），延续现有写法：错误消息固定、可安全展示，不输出原始响应、凭证或个人信息。
 - 提交内容要与北京交警当前 H5 申请页保持一致。字段或接口有变时，先核对官方脚本，再同步更新 `runtime.py`、`config.py`、`jjz/config.example.toml` 和 docs/reference-notes.md。
 - 改完运行 `python3 -m unittest discover -s tests`，必须全部通过。
 - 文档只写当前用法，不写"新增""旧版仍兼容"这类变更经过。

@@ -99,7 +99,7 @@ class Journal:
         row = self.get(key)
         if not row or row["vehicle"] != vehicle_key(plate):
             raise ValueError("没有找到当前车辆的该条提交记录")
-        if row["state"] in {"verified", "approved"}:
+        if row["state"] in {"verified", "approved", "expired"}:
             raise ValueError("服务端已确认的申请不能解除重复提交保护")
         # Explicit local recovery only after the user has checked the official App.
         self.db.execute("DELETE FROM attempts WHERE key=?", (key,))

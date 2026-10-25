@@ -1,0 +1,6 @@
+# 复制为 secrets/login.toml 并设为 600 权限；python3 -m jjz init 会自动创建。
+# 只有 login 和 auth-set --login 读取本文件，status、run 和定时任务都不加载。
+# 密码登录自动使用这两项；留空时在终端隐藏输入。短信验证码不写在这里。不要提交到仓库。
+[login]
+phone = "" # 本人手机号
+password = "" # 京通登录密码

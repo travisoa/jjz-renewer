@@ -11,27 +11,30 @@ import hashlib
 from http.client import HTTPException
 from http.cookiejar import CookieJar
 import json
+from pathlib import Path
 import re
+import shutil
 import ssl
+import subprocess
+import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlencode, urlsplit
 from urllib.request import HTTPCookieProcessor, HTTPRedirectHandler, Request, build_opener
 
-
-ENTRY_URL = (
-    "https://bjt.beijing.gov.cn/renzheng/open/m/login/goUserLogin?"
-    "client_id=100100000343&redirect_uri="
-    "https%3A%2F%2Fbjjj.jtgl.beijing.gov.cn%2Fuc%2Fucfront%2Fuserauth&"
-    "response_type=code&scope=user_info&state=100100004153"
+from .api import (
+    AUTH_ALLOWED_ORIGINS as ALLOWED_ORIGINS,
+    AUTH_CAPTCHA_PATH,
+    AUTH_PASSWORD_LOGIN_PATH,
+    AUTH_SEND_SMS_PATH,
+    AUTH_SMS_LOGIN_PATH,
+    BUSINESS_LOGIN_PAGE as BUSINESS_ENTRY_URL,
+    MAX_RESPONSE_BYTES,
+    UNIFIED_AUTH_API_ROOT as API_ROOT,
+    UNIFIED_AUTH_CALLBACK_URL as CALLBACK_URL,
+    UNIFIED_AUTH_ENTRY_URL as ENTRY_URL,
+    UNIFIED_AUTH_PORTAL_ORIGIN as PORTAL_ORIGIN,
 )
-CALLBACK_URL = "https://bjjj.jtgl.beijing.gov.cn/uc/ucfront/userauth"
-API_ROOT = "https://bjt.beijing.gov.cn/renzheng/"
-PORTAL_ORIGIN = "https://portal.bjt.beijing.gov.cn"
-ALLOWED_HOSTS = frozenset({
-    "bjt.beijing.gov.cn", "portal.bjt.beijing.gov.cn", "bjjj.jtgl.beijing.gov.cn",
-})
-MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 
 class AuthError(RuntimeError):
@@ -50,9 +53,9 @@ def official_url(value: str) -> str:
         if any(ord(c) < 33 or ord(c) == 127 or c == "\\" for c in value):
             raise ValueError
         parsed = urlsplit(value)
-        if (parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS
+        if (parsed.scheme != "https" or (parsed.hostname, parsed.port or 443) not in ALLOWED_ORIGINS
                 or parsed.username is not None or parsed.password is not None
-                or parsed.port not in (None, 443)):
+                or parsed.port == 0):
             raise ValueError
         parsed.netloc.encode("ascii")
     except (ValueError, UnicodeError):
@@ -68,7 +71,12 @@ class _OfficialRedirect(HTTPRedirectHandler):
         if req.get_method() == "POST" and code not in (302, 303):
             raise AuthError("登录请求发生了未支持的重定向，已停止。")
         # urllib turns 302/303 POST requests into GET and drops entity headers.
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        old, new = urlsplit(req.full_url), urlsplit(newurl)
+        if redirected is not None and (old.hostname, old.port or 443) != (new.hostname, new.port or 443):
+            for name in ("Authorization", "Cookie", "Origin", "Referer", "Proxy-authorization"):
+                redirected.remove_header(name)
+        return redirected
 
 
 def _certificate_error(error: BaseException) -> bool:
@@ -97,27 +105,53 @@ def _challenge(value: str, *, sms=False) -> str:
 
 def _encrypt(public_key: str, value: dict) -> str:
     """Use the official protocol's RSA PKCS#1 v1.5 Unicode-long encryption."""
-    try:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import padding, rsa
-    except ImportError:
-        raise AuthError("手机号登录需要安装 login 可选依赖 cryptography。", category="dependency") from None
+    executable = shutil.which("openssl")
+    if executable is None:
+        raise AuthError("手机号登录需要本机 OpenSSL 命令，请先检查 openssl 是否可用。", category="dependency")
     try:
         if not isinstance(public_key, str) or not 64 <= len(public_key) <= 16384:
             raise ValueError
         if public_key.startswith("-----BEGIN PUBLIC KEY-----"):
-            key = serialization.load_pem_public_key(public_key.encode("ascii"))
+            pem = public_key.encode("ascii")
         else:
             raw = base64.b64decode(public_key, validate=True)
-            key = serialization.load_der_public_key(raw)
-        if not isinstance(key, rsa.RSAPublicKey) or not 1024 <= key.key_size <= 8192:
-            raise ValueError
+            encoded = base64.b64encode(raw)
+            lines = [encoded[i:i + 64] for i in range(0, len(encoded), 64)]
+            pem = b"-----BEGIN PUBLIC KEY-----\n" + b"\n".join(lines) + b"\n-----END PUBLIC KEY-----\n"
         payload = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        block_size = (key.key_size + 7) // 8 - 11
-        encrypted = b"".join(key.encrypt(payload[i:i + block_size], padding.PKCS1v15())
-                              for i in range(0, len(payload), block_size))
+        with tempfile.TemporaryDirectory(prefix="jjz-public-key-") as directory:
+            key_path = Path(directory) / "public.pem"
+            key_path.write_bytes(pem)
+            key_path.chmod(0o600)
+            details = subprocess.run(
+                [executable, "pkey", "-pubin", "-in", str(key_path), "-text", "-noout"],
+                capture_output=True, timeout=10, check=False,
+            )
+            text = details.stdout.decode("ascii", errors="replace")
+            match = re.search(r"Public-Key:\s*\((\d+) bit\)", text)
+            if (details.returncode or match is None or "Modulus:" not in text or "Exponent:" not in text):
+                raise ValueError
+            bits = int(match.group(1))
+            if not 1024 <= bits <= 8192:
+                raise ValueError
+            block_size = (bits + 7) // 8 - 11
+            blocks, offset = [], 0
+            while offset < len(payload):
+                end = min(offset + block_size, len(payload))
+                while end < len(payload) and payload[end] & 0xC0 == 0x80:
+                    end -= 1
+                operation = subprocess.run(
+                    [executable, "pkeyutl", "-encrypt", "-pubin", "-inkey", str(key_path),
+                     "-pkeyopt", "rsa_padding_mode:pkcs1"],
+                    input=payload[offset:end], capture_output=True, timeout=10, check=False,
+                )
+                if operation.returncode or len(operation.stdout) != (bits + 7) // 8:
+                    raise ValueError
+                blocks.append(operation.stdout)
+                offset = end
+            encrypted = b"".join(blocks)
         return base64.b64encode(encrypted).decode("ascii")
-    except (ValueError, TypeError, UnicodeError, OverflowError):
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, UnicodeError, OverflowError):
         raise AuthError("登录公钥或加密数据格式不符合预期。") from None
 
 
@@ -189,11 +223,13 @@ class LoginGateway:
                 raise AuthError("官方登录页面未返回有效的会话公钥。")
             self._entry_url, self._public_key = final_url, keys[0]
             self._raw(CALLBACK_URL, allow_bad_request=True)
+            self._raw(BUSINESS_ENTRY_URL)
         except AuthError:
             self._public_key = None
             raise
         self._ready = True
-        return {"entry_reachable": True, "callback_reachable": True, "certificate_valid": True}
+        return {"entry_reachable": True, "callback_reachable": True,
+                "business_reachable": True, "certificate_valid": True}
 
     def _require_ready(self):
         if self._certificate_failed:
@@ -204,7 +240,7 @@ class LoginGateway:
 
     def captcha(self) -> bytes:
         self._require_ready()
-        _, data = self._raw(API_ROOT + "common/generateCaptcha?" + str(time.time_ns() // 1_000_000))
+        _, data = self._raw(API_ROOT + AUTH_CAPTCHA_PATH + "?" + str(time.time_ns() // 1_000_000))
         if not (data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff")
                 or data.startswith((b"GIF87a", b"GIF89a"))):
             raise AuthError("官方服务未返回可识别的图形验证码。")
@@ -233,7 +269,7 @@ class LoginGateway:
 
     def send_sms(self, phone: str, captcha: str) -> None:
         self._require_ready()
-        self._post("inner/m/sendSmsBeforeLogin", {
+        self._post(AUTH_SEND_SMS_PATH, {
             "mobile": _phone(phone), "captcha": _challenge(captcha),
             "type": "login", "smsType": "login_type",
         })
@@ -258,7 +294,7 @@ class LoginGateway:
             cert_level, grant_level = numeric_level(cert_level), numeric_level(grant_level)
         if cert_level < grant_level:
             raise AuthError("当前账号实名认证等级不足，请由本人在京通 App 完成官方认证。",
-                            category="verification")
+                            category="identity")
         redirect_url = official_url(data.get("redirectUrl"))
         return {"redirect_url": redirect_url, "cert_level": cert_level}
 
@@ -273,20 +309,23 @@ class LoginGateway:
             "encryptedPwd": hashlib.md5(password.encode("utf-8")).hexdigest(),
             "resetFlag": False,
         })
-        return self._login_result(self._post("inner/m/login/doUserLoginByPwd", {
+        return self._login_result(self._post(AUTH_PASSWORD_LOGIN_PATH, {
             "encryptData": encrypted, "captcha": captcha,
         }))
 
     def login_sms(self, phone: str, sms_code: str) -> dict:
         self._require_ready()
         encrypted = _encrypt(self._public_key, {"mobile": _phone(phone), "smsCode": _challenge(sms_code, sms=True)})
-        return self._login_result(self._post("inner/m/login/doUserLoginBySms", {"encryptData": encrypted}))
+        return self._login_result(self._post(AUTH_SMS_LOGIN_PATH, {"encryptData": encrypted}))
 
-    def follow_callback(self, result: dict) -> dict:
+    def take_callback(self, result: dict) -> tuple[str, bytes]:
         """Follow only the verified official redirect; the result is still NOT a permit AUTH."""
         self._require_ready()
         if not isinstance(result, dict):
             raise AuthError("缺少已验证的官方登录跳转结果。")
         url = official_url(result.get("redirect_url"))
-        final_url, _ = self._raw(url, allow_bad_request=True)
+        return self._raw(url, allow_bad_request=True)
+
+    def follow_callback(self, result: dict) -> dict:
+        final_url, _ = self.take_callback(result)
         return {"final_url": final_url}

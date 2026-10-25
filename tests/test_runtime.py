@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from jjz.api import (ApiError, COUNT_CHECK_PATH, DATES_PATH, DRIVER_PATH, ROUTE_PATH,
                      SITE_CONFIG_PATH, VEHICLE_CHECK_PATH)
 from jjz.cli import main
-from jjz.config import Settings
+from jjz.config import Settings, load_config
 from jjz.runtime import execute
 from jjz.storage import BusyError, Journal, exclusive
 
@@ -298,6 +298,18 @@ class CliTests(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(main(["--config", str(config), "init"]), 0)
             self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            login = root / "secrets/login.toml"
+            self.assertEqual(login.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(load_config(config).read_login(), ("", ""))
+            # A later init only fills in missing files and never overwrites either one.
+            login.unlink()
+            with redirect_stdout(StringIO()):
+                self.assertEqual(main(["--config", str(config), "init"]), 0)
+            self.assertTrue(login.exists())
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["--config", str(config), "init"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["action"], "config_exists")
             output = StringIO()
             fixture = Path(__file__).resolve().parents[1] / "examples/state.json"
             with redirect_stdout(output):
@@ -312,6 +324,19 @@ class CliTests(unittest.TestCase):
             self.assertEqual(data["ProgramArguments"][-2:], ["--permit", "outside"])
             self.assertNotIn("--submit", data["ProgramArguments"])
             self.assertNotIn("SYNTHETIC_AUTHORIZATION", schedule.read_text())
+
+    def test_init_creates_login_file_at_configured_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            config = root / "config.toml"
+            config.write_text('[api]\nlogin_file = "private/login.toml"\n', encoding="utf-8")
+            config.chmod(0o600)
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["--config", str(config), "init"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["created"], [str(root / "private/login.toml")])
+            self.assertEqual((root / "private/login.toml").stat().st_mode & 0o777, 0o600)
+            self.assertFalse((root / "secrets").exists())
 
     def test_status_reports_server_flags_and_auth_expiry_category(self):
         previous_umask = os.umask(0o077)

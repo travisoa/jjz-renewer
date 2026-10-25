@@ -1,39 +1,69 @@
 # 进京证定期续办
 
-在这台 Mac 上运行的 Python 3.11+ 命令行程序，只用标准库。日常自动续六环外证，六环内证按需手动指定。可以由 macOS 定时任务运行，也可以由 Codex、Claude Code 等代理按 [AGENTS.md](AGENTS.md) 的流程代为操作。本项目参考了 [bihongfly/jinjingzheng](https://github.com/bihongfly/jinjingzheng)，代码为独立实现，见下文"参考与致谢"。
+在 macOS 上运行的 Python 命令行工具：查询北京进京证状态，按官方规则自动续办六环外证，六环内证按需手动办理。核心功能只用标准库。可以由 macOS 定时任务运行，也可以由 Codex、Claude Code 等代理按 [AGENTS.md](AGENTS.md) 的流程代为操作。本项目参考了 [bihongfly/jinjingzheng](https://github.com/bihongfly/jinjingzheng)，代码为独立实现，见下文"参考与致谢"。
 
-## 当前状态
+## 功能
 
-- 已接入本人账号：查询接口和全部提交前校验接口都已用本人凭证只读核验。
-- `submission_enabled` 已开启。自动续办由 Claude 应用的两个定时代理任务按 [AGENTS.md](AGENTS.md) 执行：`jjz-renewal-check` 每天 08:30 左右检查，校验全部通过时提交；`jjz-status-check` 每天 09:20 左右复查办理状态，也作为当天的重试。macOS 定时任务未加载。程序还没有实际提交过申请。
-- 办理凭证从北京交警 App 的查询请求中取得，有效期未知。程序没有自动登录、凭证刷新和通知推送。
+- 查询证件状态和有效期、服务端当前是否可办（`can_apply`）、六环内证剩余次数（`inside_remaining`）。
+- 按官方接续规则计算续办时间；提交前依次调用全部官方校验接口，校验全部通过才提交。
+- 先把提交意图写入 SQLite 再提交；超时、中断或结果不明时只查询核验，不会盲目重发。
+- 业务凭证有两种取得方式：在终端用手机号（密码或短信）登录，核验目标车辆后保存；或从北京交警 App 的查询请求中取得后手动保存。
+- 图形验证码可由 `ddddocr` 在进程内自动识别，识别失败时再由本人输入。
+- 不支持无人值守重新登录、凭证自动刷新和通知推送。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
 
-## 首次配置
+## 运行环境
+
+| 依赖 | 要求 | 用途 | 已测试版本 |
+| --- | --- | --- | --- |
+| macOS | 开机、用户已登录并联网；睡眠时定时任务不运行 | 进程锁（`fcntl`）、launchd 定时任务、用默认浏览器打开验证码图片 | — |
+| Python | 3.11 及以上（标准库自带 `tomllib`） | 运行程序，核心功能不需要第三方包 | 3.14 |
+| `openssl` 命令 | 在 `PATH` 中，支持 `pkey`、`pkeyutl` | 手机号登录时按官方协议做 RSA 加密 | OpenSSL 3.6；macOS 自带的 LibreSSL 3.3 |
+| `ddddocr`、Pillow（可选） | 按 [requirements.txt](requirements.txt) 装进项目 `.venv`，`.venv` 须与运行程序的解释器是同一个 Python 小版本 | 自动识别图形验证码 | ddddocr 1.6.1、Pillow 13.0 |
+| `tesseract`（可选） | 在 `PATH` 中 | `ddddocr` 不可用时的备用识别 | — |
+| 网络 | 能访问 `jjz.jtgl.beijing.gov.cn`（443、2443）、`bjt.beijing.gov.cn`、`portal.bjt.beijing.gov.cn`、`ssp.jtgl.beijing.gov.cn` | 查询、提交前校验、手机号登录 | — |
 
 ```sh
-python3 -m jjz init          # 生成权限为 600 的 config.toml，不覆盖已有文件
-python3 -m jjz auth-set      # 在本机终端隐藏输入 Authorization
-python3 -m jjz doctor        # 离线检查配置和模板
-python3 -m jjz status        # 在线只读查询
+# 以 Homebrew 为例；已有 Python 3.11+ 和 openssl 时可跳过
+brew install python openssl@3
+
+# 可选：图形验证码自动识别。用运行程序的同一个 python3 创建 .venv
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
-1. 在 `config.toml` 填写本人车牌。
+程序始终用系统的 `python3` 运行（`python3 -m jjz`），会自动加载同版本 `.venv` 中的识别库；没有 `.venv` 或版本不一致时不加载，登录改为本人输入图形验证码。升级 Python 小版本后需要重建 `.venv`。运行测试不需要安装任何包。
+
+## 快速开始
+
+所有命令都在项目根目录运行。
+
+```sh
+python3 -m jjz init                              # 按示例补建 600 权限的 config.toml 和 secrets/login.toml，不覆盖已有文件
+python3 -m jjz auth-set --login --method sms     # 手机号登录，核验目标车辆后保存业务凭证（也可用 --method password）
+python3 -m jjz doctor                            # 离线检查配置和模板
+python3 -m jjz status                            # 在线只读查询
+```
+
+1. 在 `config.toml` 填写本人车牌。要用密码自动登录时，在 `secrets/login.toml` 填写手机号和密码；只有登录命令读取这个文件。两份示例分别是 [jjz/config.example.toml](jjz/config.example.toml) 和 [jjz/login.example.toml](jjz/login.example.toml)，真实文件已列入 `.gitignore`。
 2. 按 App「进京信息」页填写申请模板：进京目的、目的地区县及详细地址、目的地坐标、是否已在京（在京填在京地址及坐标，不在京填进京道路及坐标）、提交时所在位置坐标。代码表写在模板注释里，坐标均为高德（GCJ-02）经纬度。外证用 `[application]`，内证用 `[inside_application]`，内证模板不填不影响外证。
-3. 按 [办理凭证获取](docs/login-usage.md) 从 App 取得 Authorization，再运行 `auth-set`。凭证保存为本地 600 文件，不进入命令参数、提交记录或程序输出。
+3. 用 `auth-set --login` 登录并保存业务凭证；也可以按 [办理凭证获取](docs/login-usage.md) 从 App 查询请求中取得凭证，再运行 `auth-set` 隐藏输入。凭证保存为 600 权限的私有文件，不进入命令参数、提交记录或程序输出。
 4. `doctor` 显示 `outside_application: ready`，并且 `status` 能查到本人车辆后，配置就完成了。
 
 ## 日常命令
 
-所有命令都在项目根目录运行，输出一行 JSON，车牌已脱敏。
+所有命令都输出一行 JSON，车牌已脱敏。
 
 | 命令 | 作用 | 会提交吗 |
 | --- | --- | --- |
-| `python3 -m jjz status` | 证件状态、有效期、服务端当前是否可办（`can_apply`）、内证剩余次数（`inside_remaining`） | 否 |
+| `python3 -m jjz status` | 证件状态、有效期、`can_apply`、`inside_remaining` | 否 |
 | `python3 -m jjz plan [--permit inside]` | 按规则给出续办计划 | 否 |
 | `python3 -m jjz run [--permit inside]` | 到续办时间时跑完全部提交前校验，只预演 | 否 |
 | `python3 -m jjz run --submit` | 校验通过后实际提交；还要求 `submission_enabled = true` | 是 |
-| `python3 -m jjz history` | 本地提交记录 | 否 |
+| `python3 -m jjz history` | 提交记录 | 否 |
 | `python3 -m jjz doctor` | 离线检查 | 否 |
+| `python3 -m jjz login-check` | 只检查官方登录入口和证书，不需要账号 | 否 |
+| `python3 -m jjz login --method sms\|password` | 手机号登录并核验目标车辆，不保存凭证 | 否 |
+| `python3 -m jjz auth-set [--login --method sms\|password]` | 隐藏输入凭证，或登录核验后保存凭证 | 否 |
 
 六环内证每年限 12 次，办理前先用 `status` 看剩余次数，再到 App 核对目的地。
 
@@ -49,9 +79,9 @@ launchctl print "gui/$(id -u)/local.jjz.renew"
 launchctl bootout "gui/$(id -u)/local.jjz.renew"   # 停止
 ```
 
-调度文件只生成一次，重新生成前要先移走旧文件。文件里写的是配置、解释器和项目目录的绝对路径，不含凭证。Mac 需要开机、用户登录并联网；睡眠时不会运行，所以不能保证有效期连续不断。项目或解释器移动后要重新生成。输出追加在 `data/launchd.log`。
+调度文件只生成一次，重新生成前要先移走旧文件。文件里写的是配置、解释器和项目目录的绝对路径，不含凭证；项目或解释器移动后要重新生成。电脑睡眠时不会运行，所以不能保证有效期连续不断。输出追加在 `data/launchd.log`。
 
-**代理代办**：让 Codex 或 Claude Code 在本项目里"看下进京证"或"续一下"，代理会按 [AGENTS.md](AGENTS.md) 的流程查询、预演并报告。只有开关已打开、校验全部通过时，代理才会提交；凭证失效时会请你重新取得。定时任务和代理可以同时使用：进程锁和提交记录保证不会重复提交。
+**代理代办**：让 Codex 或 Claude Code 在本项目里"看下进京证"或"续一下"，代理会按 [AGENTS.md](AGENTS.md) 的流程查询、预演并报告。只有开关已打开、校验全部通过时，代理才会提交；凭证失效时会请你重新登录。也可以在 Claude 应用中配置定时代理任务，按 AGENTS.md 的"定时代理检查"无人值守运行。定时任务和代理可以同时使用：进程锁和提交记录保证不会重复提交。
 
 ## 提交流程与保护
 
@@ -64,6 +94,10 @@ launchctl bootout "gui/$(id -u)/local.jjz.renew"   # 停止
 - 状态未知或记录冲突。
 
 程序先把提交意图写入 SQLite，再发出一次申请。接口受理、服务端已确认、审核通过分别输出 `accepted`、`verified`、`approved`，最终都应到 App 核对证件和有效期。网络超时或程序中断时输出 `uncertain`，这时保留提交保护，之后每次先查询核验，不会直接重发。
+
+服务端查到对应申请已取消或审核失败时，程序返回 `rejected`。长时间停机后，只有服务端返回同一类型、同一生效日的证件，且完整有效期确已结束，才会把旧提交记录保留为 `expired`，随后按当前状态和全部服务端校验重新评估续办。记录缺失、日期不完整或状态矛盾时仍保留保护；已确认过期的记录也不能通过 `resolve` 删除。
+
+提交前校验结束后会重新检查北京时间和续办计划。跨日期或计划变化时返回 `blocked`，本次不写提交记录、不提交；下一次运行必须重新查询并完成校验。
 
 ```sh
 python3 -m jjz history
@@ -84,15 +118,17 @@ python3 -m jjz resolve --attempt '<history 中的 key>' --confirmed-not-submitte
 ## 项目结构
 
 ```
-jjz/        程序（api、config、domain、runtime、storage、credentials、auth、cli）
-tests/      离线测试：python3 -m unittest discover -s tests
-docs/       凭证获取、登录评估、参考研究
-examples/   演示用响应样本（演示车牌与示例配置一致）：
-            python3 -m jjz --config jjz/config.example.toml plan --fixture examples/state.json --at 2026-10-25T09:00:00+08:00
-AGENTS.md   代理操作说明（CLAUDE.md 引用同一份）
+jjz/              程序（api、config、domain、runtime、storage、credentials、auth、captcha_ocr、cli）
+                  及示例配置 config.example.toml、login.example.toml
+tests/            离线测试：python3 -m unittest discover -s tests
+docs/             凭证获取与登录验证范围、参考研究
+examples/         演示用响应样本（演示车牌与示例配置一致）：
+                  python3 -m jjz --config jjz/config.example.toml plan --fixture examples/state.json --at 2026-10-25T09:00:00+08:00
+requirements.txt  可选的验证码识别依赖（核心无第三方依赖）
+AGENTS.md         代理操作说明（CLAUDE.md 引用同一份）
 ```
 
-`config.toml`、`secrets/`、`data/` 是本机私有文件，已列入 `.gitignore`。
+`config.toml`、`secrets/`、`data/` 是私有文件，`.venv/` 是虚拟环境，都已列入 `.gitignore`。
 
 ## 参考与致谢
 
