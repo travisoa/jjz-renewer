@@ -126,12 +126,14 @@ def _ask_captcha(settings, image):
         return getpass("请本人识别图形验证码并输入（隐藏输入）: ").strip()
 
 
-def _with_graphic_captcha(gateway, settings, submit):
-    """Try a local guess up to three times, then ask the user once."""
+def _with_graphic_captcha(gateway, settings, submit, *, unattended=False):
+    """Try a local guess up to three times, then ask the user once; unattended runs never ask."""
     for _ in range(3):
         image = gateway.captcha()
         captcha = recognize_captcha(image)
         if not captcha:
+            if unattended:
+                continue
             return submit(_ask_captcha(settings, image))
         notice("图形验证码已由本地识别填写。")
         try:
@@ -140,34 +142,21 @@ def _with_graphic_captcha(gateway, settings, submit):
             if error.category != "verification":
                 raise
             notice("图形验证码未通过，正在重新识别。")
+    if unattended:
+        raise AuthError("本机未能识别图形验证码，自动重新登录已停止。", category="verification")
     return submit(_ask_captcha(settings, gateway.captcha()))
 
 
-def interactive_login(settings, method, gateway=None, *, save=False):
-    if not sys.stdin.isatty():
-        raise ConfigError("请在本机交互式终端运行 login，账号、密码和验证码不通过聊天或参数传入")
-    validate_phone_login_settings(settings)
-    phone, password = settings.read_login()
-    password = password if method == "password" else None
-    if phone and method == "password" and not password:
-        raise ConfigError("已配置 login.phone 时，密码登录还需要在 secrets/login.toml 填写 login.password。")
+def _open_login(settings, gateway):
     gateway = gateway or LoginGateway(timeout=min(settings.timeout_seconds, 20))
     gateway.preflight() # No personal data or SMS before all HTTPS checks pass.
     # Using this project means the user accepts the official login agreement.
     notice("登录协议请在官方页面阅读：https://portal.bjt.beijing.gov.cn/m/index.html")
     notice("使用本项目即视为已阅读并同意官方登录协议，继续登录。")
-    if not phone:
-        phone = getpass("本人手机号（隐藏输入）: ").strip()
-    if method == "password" and not password:
-        password = getpass("登录密码（隐藏输入，不保存）: ")
-    if method == "sms":
-        # A wrong graphic captcha is retried locally. A sent SMS is never requested again.
-        _with_graphic_captcha(gateway, settings, lambda captcha: gateway.send_sms(phone, captcha))
-        sms_code = getpass("收到的短信验证码（隐藏输入，不保存）: ").strip()
-        result = gateway.login_sms(phone, sms_code)
-    else:
-        result = _with_graphic_captcha(
-            gateway, settings, lambda captcha: gateway.login_password(phone, password, captcha))
+    return gateway
+
+
+def _finish_login(settings, gateway, result, *, save):
     final_url, _ = gateway.take_callback(result)
     landing_path, ticket, state = callback_ticket(final_url)
     authorization = BusinessLoginClient(timeout=min(settings.timeout_seconds, 20)).exchange(
@@ -181,6 +170,70 @@ def interactive_login(settings, method, gateway=None, *, save=False):
             save_authorization(settings, authorization)
         summary["credential_saved"] = True
     return summary
+
+
+def _relogin_account(settings):
+    phone, password = settings.read_login()
+    if not phone or not password:
+        raise ConfigError("自动重新登录需要在 secrets/login.toml 填写 login.phone 和 login.password。")
+    return phone, password
+
+
+def unattended_login(settings, gateway=None):
+    """Password login from login_file with local captcha recognition only; never prompts."""
+    validate_phone_login_settings(settings)
+    phone, password = _relogin_account(settings)
+    gateway = _open_login(settings, gateway)
+    result = _with_graphic_captcha(
+        gateway, settings, lambda captcha: gateway.login_password(phone, password, captcha), unattended=True)
+    return _finish_login(settings, gateway, result, save=True)
+
+
+class ReloginFailed(ApiError):
+    """The credential stays rejected because the unattended login did not finish."""
+
+
+def with_relogin(settings, action, expired=lambda result: False):
+    """Call action; after a rejected credential, log in once without prompts and call it again."""
+    try:
+        result = action()
+        if not (settings.auto_relogin and expired(result)):
+            return result, False
+    except ApiError as error:
+        if not (settings.auto_relogin and error.auth_expired):
+            raise
+    notice("业务凭证已失效，正在用登录配置自动重新登录一次。")
+    try:
+        unattended_login(settings)
+    except (ConfigError, AuthError, ApiError, BusyError, OSError) as error:
+        # Arbitrary OS errors may include private paths.
+        reason = "本地文件处理失败" if isinstance(error, OSError) else str(error)
+        raise ReloginFailed("业务凭证已失效，自动重新登录未成功：" + reason, auth_expired=True) from None
+    return action(), True
+
+
+def interactive_login(settings, method, gateway=None, *, save=False):
+    if not sys.stdin.isatty():
+        raise ConfigError("请在本机交互式终端运行 login，账号、密码和验证码不通过聊天或参数传入")
+    validate_phone_login_settings(settings)
+    phone, password = settings.read_login()
+    password = password if method == "password" else None
+    if phone and method == "password" and not password:
+        raise ConfigError("已配置 login.phone 时，密码登录还需要在 secrets/login.toml 填写 login.password。")
+    gateway = _open_login(settings, gateway)
+    if not phone:
+        phone = getpass("本人手机号（隐藏输入）: ").strip()
+    if method == "password" and not password:
+        password = getpass("登录密码（隐藏输入，不保存）: ")
+    if method == "sms":
+        # A wrong graphic captcha is retried locally. A sent SMS is never requested again.
+        _with_graphic_captcha(gateway, settings, lambda captcha: gateway.send_sms(phone, captcha))
+        sms_code = getpass("收到的短信验证码（隐藏输入，不保存）: ").strip()
+        result = gateway.login_sms(phone, sms_code)
+    else:
+        result = _with_graphic_captcha(
+            gateway, settings, lambda captcha: gateway.login_password(phone, password, captcha))
+    return _finish_login(settings, gateway, result, save=save)
 
 
 def main(argv=None):
@@ -213,9 +266,12 @@ def main(argv=None):
             return 0
         if args.command == "doctor":
             checks = {}
-            for name, check in [("live_query", settings.validate_live),
-                                ("outside_application", settings.validate_application),
-                                ("inside_application", lambda: settings.validate_application("inside"))]:
+            items = [("live_query", settings.validate_live),
+                     ("outside_application", settings.validate_application),
+                     ("inside_application", lambda: settings.validate_application("inside"))]
+            if settings.auto_relogin:
+                items.append(("auto_relogin", lambda: _relogin_account(settings)))
+            for name, check in items:
                 try:
                     check()
                     checks[name] = "ready"
@@ -254,8 +310,13 @@ def main(argv=None):
             return 0
         now = datetime.now(BEIJING)
         permit = getattr(args, "permit", None) or settings.default_permit
+        relogged = False
         if args.command == "run":
-            result = execute(settings, permit, submit=args.submit)
+            # A credential rejected by pre-submit checks is reported before anything
+            # is journaled, so running again after a login cannot submit twice.
+            result, relogged = with_relogin(
+                settings, lambda: execute(settings, permit, submit=args.submit),
+                lambda result: result.get("category") == "auth_expired" and "attempt" not in result)
             now = datetime.now(BEIJING)
         else:
             fixture = getattr(args, "fixture", None)
@@ -271,7 +332,7 @@ def main(argv=None):
                 response = json.loads(fixture.read_text(encoding="utf-8"))
             else:
                 settings.validate_live()
-                response = ApiClient(settings).state()
+                response, relogged = with_relogin(settings, lambda: ApiClient(settings).state())
                 now = datetime.now(BEIJING)
             records = normalize(response, settings.plate)
             if args.command == "status":
@@ -289,6 +350,8 @@ def main(argv=None):
                                        settings.outside_lead_days), settings.plate)
                 if fixture:
                     result["offline"] = True
+        if relogged:
+            result["relogin"] = "succeeded"
         result["checked_at"] = now.isoformat(timespec="seconds")
         emit(result)
         return 2 if result["action"] in {"blocked", "uncertain", "rejected"} else 0
@@ -301,6 +364,8 @@ def main(argv=None):
             result.update({"category": error.category, "business_auth_verified": False})
         elif isinstance(error, ApiError) and error.auth_expired:
             result["category"] = "auth_expired"
+            if isinstance(error, ReloginFailed):
+                result["relogin"] = "failed"
         emit(result)
         return 2
 

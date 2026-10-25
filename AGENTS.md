@@ -11,7 +11,7 @@
 
 ## 硬性规则
 
-1. **凭证**：不读取、打印或复制 `secrets/` 下任何文件的内容（业务凭证 `authorization.txt`、登录手机号和密码 `login.toml`），更不把这些值放进命令参数、日志、聊天、代码或代理记忆。更新业务凭证只能由用户本人在交互式终端运行 `python3 -m jjz auth-set` 输入本人 App 查询请求里的凭证，或运行 `python3 -m jjz auth-set --login --method password`（也支持 `sms`），完成手机号登录和目标车辆查询核验后直接保存。用户使用本项目即视为同意相关协议，程序内所有 `yes` 确认默认同意，不再询问。密码登录在 `secrets/login.toml` 配置了手机号和密码时由程序自行读取，只有 `login` 和 `auth-set --login` 会读它。图形验证码由本机 OCR 识别并填入；未识别出结果，或官方连续三次判定验证码错误时，才由本人输入。代理可以在用户的终端标签页里启动这些命令，但不得替用户输入账号、密码或验证码，也不得读取终端里的验证码。`login` 只验证、不保存。获取方法见 [docs/login-usage.md](docs/login-usage.md)。
+1. **凭证**：不读取、打印或复制 `secrets/` 下任何文件的内容（业务凭证 `authorization.txt`、登录手机号和密码 `login.toml`），更不把这些值放进命令参数、日志、聊天、代码或代理记忆。更新业务凭证只能由用户本人在交互式终端运行 `python3 -m jjz auth-set` 输入本人 App 查询请求里的凭证，或运行 `python3 -m jjz auth-set --login --method password`（也支持 `sms`），完成手机号登录和目标车辆查询核验后直接保存。`config.toml` 的 `[api].auto_relogin = true` 时，`status`、`plan`、`run` 遇到凭证失效会由程序自己用 `secrets/login.toml` 的密码和本机 OCR 登录一次，核验后保存新凭证再重新执行；验证码识别不出或登录失败就直接报错，不等人输入。用户使用本项目即视为同意相关协议，程序内所有 `yes` 确认默认同意，不再询问。密码登录在 `secrets/login.toml` 配置了手机号和密码时由程序自行读取，只有 `login`、`auth-set --login` 和自动重新登录会读它。图形验证码由本机 OCR 识别并填入；交互登录时未识别出结果，或官方连续三次判定验证码错误，才由本人输入。代理可以在用户的终端标签页里启动这些命令，但不得替用户输入账号、密码或验证码，也不得读取终端里的验证码。`login` 只验证、不保存。获取方法见 [docs/login-usage.md](docs/login-usage.md)。
 2. **提交**：只有 `run --submit` 会提交申请，且要求 `[renewal].submission_enabled = true`。除非用户在当次对话中明确要求，代理不得把这个开关改成 `true`，也不得生成或加载带 `--submit` 的定时任务。
 3. **不绕过保护**：程序返回 `blocked`、`uncertain`、`rejected` 时停下并报告原因。不要关闭证书校验，不要跳过或伪造服务端校验，不要为了放行而修改提交保护逻辑。
 4. **六环内证**：每车每年最多 12 次。只在用户当次明确要求时办理，办理前先用 `status` 报告 `inside_remaining` 并请用户确认。
@@ -24,7 +24,8 @@
 用户让你"看下进京证""续一下"，或者定时代理执行时，按下面的顺序处理。所有命令都输出一行 JSON：退出码 0 表示正常；2 表示 `blocked`、`uncertain`、`rejected`、`error`，或检查未全部就绪。
 
 1. 运行 `python3 -m jjz status`（只读）。
-   - `action: error` 且 `category: auth_expired`：凭证失效，程序不会自动重新登录。停下，请用户按 docs/login-usage.md 重新取得凭证，再在终端运行 `auth-set`。
+   - `action: error` 且 `category: auth_expired`：凭证失效。开启 `auto_relogin` 时程序已自动登录过一次，`relogin: failed` 和 `reason` 说明失败原因。停下，请用户按 docs/login-usage.md 重新取得凭证，再在终端运行 `auth-set`。
+   - 输出带 `relogin: succeeded`：程序已自动重新登录并保存新凭证，输出是重新执行后的结果，照常处理，汇报时说明。
    - 其他 `error`：报告 `reason`。`接口网络请求失败或超时` 可以稍后重试一次。
    - 正常：报告每张证的类型、状态、起止日期，以及 `can_apply`（服务端当前是否允许新申请）和 `inside_remaining`（内证剩余次数）。
 2. 运行 `python3 -m jjz run`（默认六环外，只预演、不提交），按下表处理返回的 `action`。
@@ -51,9 +52,9 @@
 Claude 应用里的定时任务可以无人值守地运行本节流程，任务名称和运行时间由用户按自己的证件周期设置。六环外证每次 7 天，`outside_lead_days = 0` 时到期当天申请、次日生效，所以续办任务安排在每个周期的到期日、`earliest_time` 之后运行即可；每天运行也无妨，未到续办日时只返回 `wait`。同一天可以再安排一次复查，兼作当天的重试；提交保护会防止重复提交，两次同时运行时进程锁会让后一次报错退出。定时任务完全按"续办操作流程"执行，只处理六环外证。
 
 - 无人值守时只运行 `status`、`run`，满足第 3 步条件时再运行 `run --submit`。不修改 `config.toml`、代码和定时任务，不运行 `resolve`、`login`、`auth-set`。
-- 凭证失效（`category: auth_expired`）时立即结束本次运行，按下方要求汇报并推送，请用户本人重新登录。不尝试登录，不在终端标签页启动需要输入的命令，不等待用户输入，也不反复重试。
+- 自动重新登录只由程序在 `status`、`run` 内部完成。输出仍是凭证失效（`category: auth_expired`）时立即结束本次运行，按下方要求汇报并推送，请用户本人重新登录。代理自己不尝试登录，不在终端标签页启动需要输入的命令，不等待用户输入，也不反复重试。
 - `status` 出现网络类 `error` 时，等约 1 分钟重试一次。
-- 最后用不超过 8 行的简体中文汇报：每张证的类型、状态、起止日期；`can_apply`、`inside_remaining`；`run` 的 `action` 和 `reason`；是否提交，以及提交结果的 `action` 和 `attempt`；需要用户本人做的事（没有就写"无需操作"）。车牌只用程序输出的脱敏形式。
+- 最后用不超过 8 行的简体中文汇报：每张证的类型、状态、起止日期；`can_apply`、`inside_remaining`；`run` 的 `action` 和 `reason`；是否提交，以及提交结果的 `action` 和 `attempt`；是否自动重新登录（`relogin`）；需要用户本人做的事（没有就写"无需操作"）。车牌只用程序输出的脱敏形式。
 - 以下情况，在 PushNotification 工具可用时，再发一条一句话推送，内容与汇报一致：刚提交了申请、已可办理但提交开关未开、凭证失效、`blocked`、`uncertain`、`rejected`。其余情况不发推送。
 - 检查结果是临时状态，不写入 mem0 或其他记忆。
 

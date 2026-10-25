@@ -65,6 +65,7 @@ class Settings:
     application: dict = field(default_factory=dict)
     inside_application: dict = field(default_factory=dict)
     login_file: Path | None = None
+    auto_relogin: bool = False
 
     def read_authorization(self) -> str:
         """Read a single local header value without ever including it in errors."""
@@ -86,7 +87,7 @@ class Settings:
         return value
 
     def read_login(self) -> tuple[str, str]:
-        """Read the private phone/password pair; only login commands call this."""
+        """Read the private phone/password pair; only login commands and auto_relogin call this."""
         if self.login_file is None:
             return "", ""
         try:
@@ -223,6 +224,9 @@ def load_config(path: Path | str) -> Settings:
     enabled = renewal.get("submission_enabled", False)
     if type(enabled) is not bool:
         raise ConfigError("renewal.submission_enabled 必须是布尔值。")
+    relogin = api.get("auto_relogin", False)
+    if type(relogin) is not bool:
+        raise ConfigError("api.auto_relogin 必须是布尔值。")
     timeout = api.get("timeout_seconds", 20)
     if type(timeout) not in (int, float) or not 1 <= timeout <= 120:
         raise ConfigError("api.timeout_seconds 必须在 1 至 120 秒之间。")
@@ -237,5 +241,5 @@ def load_config(path: Path | str) -> Settings:
         outside_lead_days=lead, submission_enabled=enabled,
         timeout_seconds=float(timeout), data_dir=local_path(data_dir),
         application=dict(application), inside_application=dict(inside_application),
-        login_file=local_path(login_file),
+        login_file=local_path(login_file), auto_relogin=relogin,
     )
