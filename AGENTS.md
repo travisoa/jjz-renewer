@@ -24,7 +24,7 @@
 用户让你"看下进京证""续一下"，或者定时代理执行时，按下面的顺序处理。所有命令都输出一行 JSON：退出码 0 表示正常；2 表示 `blocked`、`uncertain`、`rejected`、`error`，或检查未全部就绪。
 
 1. 运行 `python3 -m jjz status`（只读）。
-   - `action: error` 且 `category: auth_expired`：凭证失效。停下，请用户按 docs/login-usage.md 重新取得凭证，再在终端运行 `auth-set`。
+   - `action: error` 且 `category: auth_expired`：凭证失效，程序不会自动重新登录。停下，请用户按 docs/login-usage.md 重新取得凭证，再在终端运行 `auth-set`。
    - 其他 `error`：报告 `reason`。`接口网络请求失败或超时` 可以稍后重试一次。
    - 正常：报告每张证的类型、状态、起止日期，以及 `can_apply`（服务端当前是否允许新申请）和 `inside_remaining`（内证剩余次数）。
 2. 运行 `python3 -m jjz run`（默认六环外，只预演、不提交），按下表处理返回的 `action`。
@@ -50,7 +50,8 @@
 
 Claude 应用里的定时任务可以无人值守地运行本节流程，任务名称和运行时间由用户按自己的证件周期设置。六环外证每次 7 天，`outside_lead_days = 0` 时到期当天申请、次日生效，所以续办任务安排在每个周期的到期日、`earliest_time` 之后运行即可；每天运行也无妨，未到续办日时只返回 `wait`。同一天可以再安排一次复查，兼作当天的重试；提交保护会防止重复提交，两次同时运行时进程锁会让后一次报错退出。定时任务完全按"续办操作流程"执行，只处理六环外证。
 
-- 无人值守时只运行 `status`、`run`，满足第 3 步条件时再运行 `run --submit`。不修改 `config.toml`、代码和定时任务，不运行 `resolve`、`auth-set`。
+- 无人值守时只运行 `status`、`run`，满足第 3 步条件时再运行 `run --submit`。不修改 `config.toml`、代码和定时任务，不运行 `resolve`、`login`、`auth-set`。
+- 凭证失效（`category: auth_expired`）时立即结束本次运行，按下方要求汇报并推送，请用户本人重新登录。不尝试登录，不在终端标签页启动需要输入的命令，不等待用户输入，也不反复重试。
 - `status` 出现网络类 `error` 时，等约 1 分钟重试一次。
 - 最后用不超过 8 行的简体中文汇报：每张证的类型、状态、起止日期；`can_apply`、`inside_remaining`；`run` 的 `action` 和 `reason`；是否提交，以及提交结果的 `action` 和 `attempt`；需要用户本人做的事（没有就写"无需操作"）。车牌只用程序输出的脱敏形式。
 - 以下情况，在 PushNotification 工具可用时，再发一条一句话推送，内容与汇报一致：刚提交了申请、已可办理但提交开关未开、凭证失效、`blocked`、`uncertain`、`rejected`。其余情况不发推送。
