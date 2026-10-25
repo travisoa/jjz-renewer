@@ -1,6 +1,6 @@
 # 进京证定期续办
 
-在这台 Mac 上运行的 Python 3.11+ 命令行程序，只用标准库。日常自动续六环外证，六环内证按需手动指定。可以由 macOS 定时任务运行，也可以由 Codex、Claude Code 等代理按 [AGENTS.md](AGENTS.md) 的流程代为操作。程序为独立实现，参考研究见 [研究记录](docs/reference-notes.md)。
+在这台 Mac 上运行的 Python 3.11+ 命令行程序，只用标准库。日常自动续六环外证，六环内证按需手动指定。可以由 macOS 定时任务运行，也可以由 Codex、Claude Code 等代理按 [AGENTS.md](AGENTS.md) 的流程代为操作。本项目参考了 [bihongfly/jinjingzheng](https://github.com/bihongfly/jinjingzheng)，代码为独立实现，见下文"参考与致谢"。
 
 ## 当前状态
 
@@ -93,6 +93,16 @@ AGENTS.md   代理操作说明（CLAUDE.md 引用同一份）
 ```
 
 `config.toml`、`secrets/`、`data/` 是本机私有文件，已列入 `.gitignore`。
+
+## 参考与致谢
+
+感谢 [bihongfly/jinjingzheng](https://github.com/bihongfly/jinjingzheng)。本项目参考了它 2026-01-12 的 main 提交 [`70ea970`](https://github.com/bihongfly/jinjingzheng/commit/70ea97006b66c541733222ff0bb4d6229e08b97b)，用到的内容包括：
+
+- 证件查询和提交两个接口的路径，以及请求头 `Authorization` 的用法；
+- 申请体字段的最初线索；
+- 作者在 [issue #13](https://github.com/bihongfly/jinjingzheng/issues/13#issuecomment-3722585683) 中关于凭证来源的说明：续办用的是办理请求里的 `Authorization`，不是京通登录 token。
+
+本项目没有复制该项目的源码。之后又对照北京交警当前的官方 H5 页面，重新整理了提交字段和提交前校验，详见 [研究记录](docs/reference-notes.md)。该项目的 README 对商用、转载等有自定义限制；下面的 MIT 许可只适用于本仓库自己的代码和文档。
 
 ## 许可
 
