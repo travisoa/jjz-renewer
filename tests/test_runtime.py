@@ -253,6 +253,38 @@ class RuntimeTests(unittest.TestCase):
         execute(self.settings, "inside", submit=True, client=client, clock=lambda: clock_value[0])
         self.assertEqual(client.submissions[0]["jjrq"], "2026-10-26")
 
+    def test_switch_from_outside_to_inside_uses_inside_flag_and_dates(self):
+        self.settings.inside_application = dict(self.settings.application)
+        server = checks(**{DATES_PATH: {"code": 200, "data": {"jjrqs": ["2026-10-25", "2026-10-26"]}}})
+        client = FakeClient([response(record())], server=server)
+        result = execute(self.settings, "inside", NOW, True, client)
+        self.assertEqual(result["apply_date"], "2026-10-25")
+        self.assertEqual(dict(client.checked)[DATES_PATH],
+                         {"vId": "synthetic-vehicle", "jjzzl": "01", "hphm": PLATE})
+        self.assertEqual({key: client.submissions[0][key] for key in ("jjzzl", "jjrq")},
+                         {"jjzzl": "01", "jjrq": "2026-10-25"})
+        self.assertNotIn("applyIdOld", client.submissions[0])
+
+        closed = FakeClient([response(record(), ylzsfkb=False)], server=server)
+        self.settings.data_dir = self.root / "other-data"
+        self.assertEqual(execute(self.settings, "inside", NOW, True, closed)["action"], "blocked")
+        self.assertEqual(closed.submissions, [])
+
+    def test_switch_from_inside_back_to_outside_uses_outside_flag(self):
+        inside = record(applyId="inside-application", jjzzl="01", jjzzlmc="六环内")
+        client = FakeClient([response(inside)])
+        result = execute(self.settings, "outside", NOW, True, client)
+        self.assertEqual(result["apply_date"], "2026-10-26")
+        self.assertEqual(dict(client.checked)[DATES_PATH],
+                         {"vId": "synthetic-vehicle", "jjzzl": "02", "hphm": PLATE})
+        self.assertEqual({key: client.submissions[0][key] for key in ("jjzzl", "jjrq")},
+                         {"jjzzl": "02", "jjrq": "2026-10-26"})
+
+        closed = FakeClient([response(inside, elzsfkb=False)])
+        self.settings.data_dir = self.root / "other-data"
+        self.assertEqual(execute(self.settings, "outside", NOW, True, closed)["action"], "blocked")
+        self.assertEqual(closed.submissions, [])
+
     def test_business_rejection_keeps_same_day_protection(self):
         client = FakeClient([response(record())], ApiError("rejected"))
         self.assertEqual(execute(self.settings, "outside", NOW, True, client)["action"], "rejected")

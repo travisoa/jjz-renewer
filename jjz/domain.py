@@ -252,22 +252,28 @@ def plan(
             live_inside = []
 
         candidates = [r for r, kind in types if kind == permit]
-        if not candidates:
-            return Decision("blocked", "缺少该类型历史证件，请先在 App 完成首次办理或类型切换", permit)
-        latest = _latest(candidates)
-        if latest.get("blztmc") in FAILED:
-            return Decision("blocked", "最新申请已取消或审核未通过，请在 App 核对后再办理", permit, record=latest)
-        start, end = _period(latest)
-        if start > today:
-            raise DomainError("最新证件的有效期在未来，需核对办理状态")
-
-        due = end - timedelta(days=outside_lead_days if permit == "outside" else 0)
-        if today < due:
-            return Decision("wait", f"尚未到续办日（{due.isoformat()}）", permit, record=latest)
+        if candidates:
+            latest = _latest(candidates)
+            if latest.get("blztmc") in FAILED:
+                return Decision("blocked", "最新申请已取消或审核未通过，请在 App 核对后再办理", permit, record=latest)
+            start, end = _period(latest)
+            if start > today:
+                raise DomainError("最新证件的有效期在未来，需核对办理状态")
+            due = end - timedelta(days=outside_lead_days if permit == "outside" else 0)
+            if today < due:
+                return Decision("wait", f"尚未到续办日（{due.isoformat()}）", permit, record=latest)
+            reason = "已到续办时间，可申请接续证件"
+        else:
+            # Like the official type picker, switching only needs the server's
+            # availability flag and date list, both checked before submission.
+            # A live inside permit still delays outside until the day after it ends.
+            latest, end = None, None
+            name, other = ("六环内", "六环外") if permit == "inside" else ("六环外", "六环内")
+            reason = f"无{name}证记录，可从{other}切换办理{name}证"
         if now.time() < earliest:
             return Decision("wait", f"等待北京时间 {earliest_time} 后办理", permit, record=latest)
 
-        if end >= today:
+        if end is not None and end >= today:
             apply_date = end + timedelta(days=1)
         elif permit == "inside" and now.time() >= time(12):
             apply_date = today + timedelta(days=1)
@@ -283,6 +289,6 @@ def plan(
         }
         if len(live_application_ids) > 1:
             raise DomainError("同日存在多张生效中证件，状态相互冲突，需先在 App 核对")
-        return Decision("renew", "已到续办时间，可申请接续证件", permit, apply_date, latest)
+        return Decision("renew", reason, permit, apply_date, latest)
     except DomainError as exc:
         return Decision("blocked", str(exc), permit)

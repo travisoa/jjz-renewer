@@ -28,7 +28,7 @@
 2026-10-25 对照北京交警当前的进京证 H5（`https://jjz.jtgl.beijing.gov.cn:2443/H5_NewUC/`）公开脚本，并用本人凭证只读调用相关校验接口后确认：
 
 - 申请体不再带 `applyIdOld`，也不发百度坐标 `sqdzbdjd`/`sqdzbdwd`。
-- 车辆字段取自查询结果里的车辆对象：`vId`、`hphm`、`hpzl`、`ylzsfkb`、`elzsfkb`、`ylzmc`、`elzmc`、`ylzqyms`、`elzqyms`、`cllx`。其中 `elzsfkb`/`ylzsfkb` 是服务端给出的"六环外/六环内当前可办"标志，选证页据此决定能否选择。
+- 车辆字段取自查询结果里的车辆对象：`vId`、`hphm`、`hpzl`、`ylzsfkb`、`elzsfkb`、`ylzmc`、`elzmc`、`ylzqyms`、`elzqyms`、`cllx`。其中 `elzsfkb`/`ylzsfkb` 是服务端给出的"六环外/六环内当前可办"标志，选证页（`pagesSqbz/certype`）只据此决定能否选择，不要求同类型的历史证件，所以两类证可以直接互相切换；不可办时显示 `elzqyms`/`ylzqyms` 中的原因。2026-10-26 实测：持有生效中的六环外证时办理六环内证，审核通过后查询结果只返回六环内证，不再返回原六环外证。
 - 驾驶人信息取自 `getJsrxx`（`jsrxm`、`jszh`、`dabh`），不是取自证件记录。
 - 页面提交目的地区县名 `area`、目的地坐标 `jjdzgdjd`/`jjdzgdwd`，以及 `jingState`（固定为空串）。`sfzj=1` 时发在京地址 `zjxxdz` 及坐标，并清空道路字段；`sfzj=0` 时发道路 `jjlk`、`jjlkmc` 及坐标 `jjlkgdjd`/`jjlkgdwd`，并清空在京地址字段。
 - `sqdzgdjd`/`sqdzgdwd` 是提交时手机的当前定位，不是目的地坐标。`jjmd`/`jjmdmc` 可多选，用逗号拼接。

@@ -162,9 +162,27 @@ class PlanTests(unittest.TestCase):
         self.assertEqual("renew", plan([record(), record()], "outside", now()).action)
 
     def test_no_type_history_does_not_reuse_other_apply_id(self):
-        self.assertEqual("blocked", plan([record()], "inside", now()).action)
+        result = plan([record()], "inside", now())
+        self.assertEqual("renew", result.action)
+        self.assertIsNone(result.record)
         inside = record(jjzzl="01", jjzzlmc="六环内")
-        self.assertEqual("blocked", plan([inside], "outside", now()).action)
+        result = plan([inside], "outside", now())
+        self.assertEqual("renew", result.action)
+        self.assertIsNone(result.record)
+
+    def test_switch_back_to_outside_starts_after_inside_ends(self):
+        inside = record(jjzzl="01", jjzzlmc="六环内", yxqs="2026-10-26", yxqz="2026-11-01")
+        self.assertEqual("wait", plan([inside], "outside", now("2026-10-31")).action)
+        self.assertEqual("wait", plan([inside], "outside", now("2026-11-01", "07:59")).action)
+        self.assertEqual(date(2026, 11, 2), plan([inside], "outside", now("2026-11-01")).apply_date)
+        expired = record(jjzzl="01", jjzzlmc="六环内", blztmc="已过期")
+        self.assertEqual(date(2026, 10, 27), plan([expired], "outside", now("2026-10-27", "15:00")).apply_date)
+
+    def test_switch_to_inside_while_outside_is_active(self):
+        active = record(yxqs="2026-10-26", yxqz="2026-11-01")
+        self.assertEqual(date(2026, 10, 26), plan([active], "inside", now("2026-10-26", "00:05"), "00:00").apply_date)
+        self.assertEqual(date(2026, 10, 27), plan([active], "inside", now("2026-10-26", "12:00")).apply_date)
+        self.assertEqual("wait", plan([active], "inside", now("2026-10-26", "07:59")).action)
 
     def test_inside_last_day_only(self):
         inside = record(jjzzl="01", jjzzlmc="六环内")
