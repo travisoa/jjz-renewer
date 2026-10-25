@@ -33,7 +33,7 @@
    - 如果 `submission_enabled` 已是 `true`，运行 `python3 -m jjz run --submit`。
    - 否则告诉用户现在可以办理，按规则 2 等用户决定。
 4. 提交之后报告 `action` 和 `attempt`，并提醒用户到 App 核对证件和有效期。之后再次运行 `status` 或 `run`，程序会自动核验结果，不会重复提交。
-5. 定时任务的输出在 `data/launchd.log`，每次运行追加一行 JSON。要看最近结果，读最后几行即可。
+5. macOS 定时任务的输出在 `data/launchd.log`，每次运行追加一行 JSON，要看最近结果，读最后几行即可。Linux 的输出在 systemd 日志里，用 `journalctl --user -u jjz-renew.service -n 5 -o cat` 查看。
 
 | `action` | 含义 | 代理应对 |
 | --- | --- | --- |
@@ -71,6 +71,8 @@ launchctl bootout "gui/$(id -u)/local.jjz.renew"
 ```
 
 Mac 必须开机、用户登录且联网；睡眠时任务不运行。
+
+Linux 用 systemd 用户定时器，单元文件和命令见 README「自动续办」。带 `--submit` 的单元文件同样须遵守规则 2。同一辆车只在一台机器上运行定时任务，提交记录不跨机器共享。
 
 ## 排错
 

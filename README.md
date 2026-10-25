@@ -1,6 +1,6 @@
 # 进京证定期续办
 
-在 macOS 上运行的 Python 命令行工具：查询北京进京证状态，按官方规则自动续办六环外证，六环内证按需手动办理。核心功能只用标准库。可以由 macOS 定时任务运行，也可以由 Codex、Claude Code 等代理按 [AGENTS.md](AGENTS.md) 的流程代为操作。本项目参考了 [bihongfly/jinjingzheng](https://github.com/bihongfly/jinjingzheng)，代码为独立实现，见下文"参考与致谢"。
+在 macOS 或 Linux 上运行的 Python 命令行工具：查询北京进京证状态，按官方规则自动续办六环外证，六环内证按需手动办理。核心功能只用标准库。可以由 macOS launchd 或 Linux systemd 定时任务运行，也可以由 Codex、Claude Code 等代理按 [AGENTS.md](AGENTS.md) 的流程代为操作。本项目参考了 [bihongfly/jinjingzheng](https://github.com/bihongfly/jinjingzheng)，代码为独立实现，见下文"参考与致谢"。
 
 ## 功能
 
@@ -16,15 +16,18 @@
 | 依赖 | 要求 | 用途 | 已测试版本 |
 | --- | --- | --- | --- |
 | macOS | 开机、用户已登录并联网；睡眠时定时任务不运行 | 进程锁（`fcntl`）、launchd 定时任务、用默认浏览器打开验证码图片 | — |
-| Python | 3.11 及以上（标准库自带 `tomllib`） | 运行程序，核心功能不需要第三方包 | 3.14 |
-| `openssl` 命令 | 在 `PATH` 中，支持 `pkey`、`pkeyutl` | 手机号登录时按官方协议做 RSA 加密 | OpenSSL 3.6；macOS 自带的 LibreSSL 3.3 |
-| `ddddocr`、Pillow（可选） | 按 [requirements.txt](requirements.txt) 装进项目 `.venv`，`.venv` 须与运行程序的解释器是同一个 Python 小版本 | 自动识别图形验证码 | ddddocr 1.6.1、Pillow 13.0 |
+| Linux | 联网，装有时区数据（`tzdata`）；定时任务要在未登录时运行须开启 linger | 进程锁（`fcntl`）、systemd 用户定时任务；没有图形界面时输出验证码图片路径，由本人自行打开 | Debian 13 |
+| Python | 3.11 及以上（标准库自带 `tomllib`） | 运行程序，核心功能不需要第三方包 | 3.14（macOS）、3.11（Debian 13） |
+| `openssl` 命令 | 在 `PATH` 中，支持 `pkey`、`pkeyutl` | 手机号登录时按官方协议做 RSA 加密 | OpenSSL 3.6（macOS）、3.5（Debian 13）；macOS 自带的 LibreSSL 3.3 |
+| `ddddocr`、Pillow（可选） | 按 [requirements.txt](requirements.txt) 装进项目 `.venv`，`.venv` 须与运行程序的解释器是同一个 Python 小版本 | 自动识别图形验证码 | ddddocr 1.6.1、Pillow 13.0（macOS） |
 | `tesseract`（可选） | 在 `PATH` 中 | `ddddocr` 不可用时的备用识别 | — |
 | 网络 | 能访问 `jjz.jtgl.beijing.gov.cn`（443、2443）、`bjt.beijing.gov.cn`、`portal.bjt.beijing.gov.cn`、`ssp.jtgl.beijing.gov.cn` | 查询、提交前校验、手机号登录 | — |
 
 ```sh
-# 以 Homebrew 为例；已有 Python 3.11+ 和 openssl 时可跳过
+# macOS 以 Homebrew 为例；已有 Python 3.11+ 和 openssl 时可跳过
 brew install python openssl@3
+# Debian 12+ / Ubuntu 24.04+；更早的发行版自带 Python 低于 3.11，需另装
+sudo apt install python3 python3-venv openssl tzdata
 
 # 可选：图形验证码自动识别。用运行程序的同一个 python3 创建 .venv
 python3 -m venv .venv
@@ -80,6 +83,46 @@ launchctl bootout "gui/$(id -u)/local.jjz.renew"   # 停止
 ```
 
 调度文件只生成一次，重新生成前要先移走旧文件。文件里写的是配置、解释器和项目目录的绝对路径，不含凭证；项目或解释器移动后要重新生成。电脑睡眠时不会运行，所以不能保证有效期连续不断。输出追加在 `data/launchd.log`。
+
+**Linux 定时任务**：用 systemd 用户定时器，同样每 30 分钟运行一次、固定只处理六环外。`schedule` 命令只生成 macOS 的调度文件，Linux 上按下面内容手动创建两个文件：把 `/path/to/jjz-renewer` 换成项目目录的绝对路径，`/usr/bin/python3` 换成 `command -v python3` 的结果。
+
+```ini
+# ~/.config/systemd/user/jjz-renew.service
+[Unit]
+Description=jjz outside renewal check
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/jjz-renewer
+# 去掉 --submit 则只预演
+ExecStart=/usr/bin/python3 -m jjz --config /path/to/jjz-renewer/config.toml run --permit outside --submit
+UMask=0077
+Environment=PYTHONUNBUFFERED=1 PYTHONUTF8=1
+```
+
+```ini
+# ~/.config/systemd/user/jjz-renew.timer
+[Unit]
+Description=Run jjz renewal check every 30 minutes
+
+[Timer]
+OnActiveSec=1min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now jjz-renew.timer
+systemctl --user list-timers jjz-renew.timer
+journalctl --user -u jjz-renew.service -n 5 -o cat   # 最近几次输出
+loginctl enable-linger "$USER"                       # 用户未登录时也运行
+systemctl --user disable --now jjz-renew.timer       # 停止
+```
+
+输出写进 systemd 日志，用 `journalctl` 查看；返回 `blocked`、`uncertain`、`rejected`、`error` 时退出码为 2，服务会显示为 failed。不要让 macOS 和 Linux 同时为同一辆车运行定时任务：两台机器的提交记录各自独立，不能互相防止重复提交。
 
 **代理代办**：让 Codex 或 Claude Code 在本项目里"看下进京证"或"续一下"，代理会按 [AGENTS.md](AGENTS.md) 的流程查询、预演并报告。只有开关已打开、校验全部通过时，代理才会提交；凭证失效且自动重新登录未开启或未成功时，会请你重新登录。也可以在 Claude 应用中配置定时代理任务，按 AGENTS.md 的"定时代理检查"无人值守运行。定时任务和代理可以同时使用：进程锁和提交记录保证不会重复提交。
 
