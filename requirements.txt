@@ -3,5 +3,13 @@
 #   /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv .venv
 #   .venv/bin/python -m pip install -r requirements.txt
 # 未安装时，登录改为由本人输入图形验证码。环境说明见 README「运行环境」。
+# 识别库在自动重新登录时与密码同一进程运行，所以连同间接依赖全部固定版本；升级时整组核对后再改。
 ddddocr==1.6.1 # 已在 Python 3.14 上用于真实登录
-pillow>=13.0 # 验证码预处理，直接由 jjz/captcha_ocr.py 导入
+pillow==13.0.0 # 验证码预处理，直接由 jjz/captcha_ocr.py 导入
+# 以下是 ddddocr 的间接依赖
+numpy==2.5.4; python_version >= "3.12" # 不支持 Python 3.11，3.11 上由 pip 选择兼容版本
+onnxruntime==1.31.0
+opencv-python==5.0.0.93
+flatbuffers==25.12.19
+packaging==26.3
+protobuf==7.36.2

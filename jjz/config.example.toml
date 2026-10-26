@@ -2,7 +2,7 @@
 # 一辆车一份配置：auth-set --login 或 vehicles --create 会为账号下其他车辆生成 config-car2.toml 等；
 # 手动新建运行 python3 -m jjz --config config-<名称>.toml init（名称只用英文字母、数字、- 和 _），之后的命令都加同一个 --config。
 [api]
-base_url = "https://jjz.jtgl.beijing.gov.cn"
+base_url = "https://jjz.jtgl.beijing.gov.cn" # 只支持官方服务源，也可用 https://jjz.jtgl.beijing.gov.cn:2443
 # 凭证和登录文件的路径可改，但须放在 secrets/ 下或仓库之外；.gitignore 只保护这些默认位置和文件名。
 # 同一账号下的车辆共用这两个文件；不同账号的车辆各指向自己的文件。
 auth_file = "secrets/authorization.txt"

@@ -13,12 +13,17 @@ from pathlib import Path
 
 
 _CAPTCHA = re.compile(r"[A-Za-z0-9]{4,6}")
+# Official captchas are a few thousand pixels; preprocessing enlarges each image up to 16 times.
+_MAX_PIXELS = 1_000_000
 _ocr = None
 
 
 def recognize_captcha(image: bytes, *, classify=None) -> str | None:
     """Return one alphanumeric guess, or None when no usable engine result exists."""
     if not isinstance(image, bytes) or not image:
+        return None
+    size = _dimensions(image)
+    if size is not None and size[0] * size[1] > _MAX_PIXELS:
         return None
     if classify is not None:
         try:
@@ -33,6 +38,26 @@ def recognize_captcha(image: bytes, *, classify=None) -> str | None:
                 guess = None
             if guess:
                 return guess
+    return None
+
+
+def _dimensions(image: bytes) -> tuple[int, int] | None:
+    """Width and height from a PNG, GIF or JPEG header, read without decoding any pixels."""
+    if image.startswith(b"\x89PNG\r\n\x1a\n") and image[12:16] == b"IHDR" and len(image) >= 24:
+        return int.from_bytes(image[16:20], "big"), int.from_bytes(image[20:24], "big")
+    if image.startswith((b"GIF87a", b"GIF89a")) and len(image) >= 10:
+        return int.from_bytes(image[6:8], "little"), int.from_bytes(image[8:10], "little")
+    offset = 2 if image.startswith(b"\xff\xd8") else len(image)
+    while offset + 9 <= len(image) and image[offset] == 0xFF:
+        marker = image[offset + 1]
+        if marker == 0xFF:  # fill byte before a marker
+            offset += 1
+            continue
+        # Start-of-frame segments carry the size; C4, C8 and CC are other segment types.
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            return (int.from_bytes(image[offset + 7:offset + 9], "big"),
+                    int.from_bytes(image[offset + 5:offset + 7], "big"))
+        offset += 2 + int.from_bytes(image[offset + 2:offset + 4], "big")
     return None
 
 

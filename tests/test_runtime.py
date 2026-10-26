@@ -1,4 +1,4 @@
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from datetime import datetime
 from io import StringIO
@@ -108,6 +108,14 @@ class RuntimeTests(unittest.TestCase):
         with Journal(self.settings.data_dir) as journal:
             self.assertEqual(journal.history(PLATE), [])
         self.assertNotIn(PLATE, json.dumps(result))
+
+    def test_driver_without_archive_number_is_submitted_as_null(self):
+        server = checks(**{DRIVER_PATH: {"code": 200, "data": {"jsrxm": "SYNTHETIC_PERSON",
+                                                               "jszh": "SYNTHETIC_IDENTITY"}}})
+        client = FakeClient([response(record())], server=server)
+        result = execute(self.settings, "outside", NOW, True, client)
+        self.assertEqual(result["action"], "accepted")
+        self.assertIsNone(client.submissions[0]["dabh"])
 
     def test_payload_mirrors_official_apply_pages(self):
         client = FakeClient([response(record())])
@@ -425,6 +433,27 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(main(["--config", str(config), "status"]), 2)
             self.assertEqual(json.loads(output.getvalue())["category"], "auth_expired")
             self.assertNotIn("SYNTHETIC_AUTHORIZATION", output.getvalue())
+
+    def test_unexpected_error_still_ends_with_one_sanitized_json_line(self):
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            auth = root / "auth"
+            auth.write_text("SYNTHETIC_AUTHORIZATION")
+            auth.chmod(0o600)
+            config = root / "config.toml"
+            config.write_text(f'[api]\nbase_url="https://example.invalid"\nauth_file="{auth}"\n'
+                              f'[vehicle]\nplate="{PLATE}"\n', encoding="utf-8")
+            client = FakeClient([KeyError("SYNTHETIC_PRIVATE_DETAIL")])
+            output, errors = StringIO(), StringIO()
+            with (patch("jjz.cli.ApiClient", return_value=client), redirect_stdout(output),
+                  redirect_stderr(errors)):
+                self.assertEqual(main(["--config", str(config), "status"]), 2)
+            self.assertEqual(len(output.getvalue().splitlines()), 1)
+            data = json.loads(output.getvalue())
+            self.assertEqual((data["action"], data["error_type"]), ("error", "KeyError"))
+            self.assertNotIn("SYNTHETIC_PRIVATE_DETAIL", output.getvalue() + errors.getvalue())
 
     def test_simulated_time_cannot_be_used_for_live_plan(self):
         previous_umask = os.umask(0o077)

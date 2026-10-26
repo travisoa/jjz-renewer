@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from urllib.parse import urlencode
 
-from .config import Settings
+from .config import ConfigError, Settings
 
 
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -29,6 +29,8 @@ AUTH_PASSWORD_LOGIN_PATH = "inner/m/login/doUserLoginByPwd"
 AUTH_SMS_LOGIN_PATH = "inner/m/login/doUserLoginBySms"
 BUSINESS_LOGIN_ORIGIN = "https://jjz.jtgl.beijing.gov.cn:2443"
 BUSINESS_LOGIN_PAGE = BUSINESS_LOGIN_ORIGIN + "/login_h5_byUserCenter.html"
+# The only permit-service origins the business credential is ever sent to.
+SERVICE_ORIGINS = frozenset({BUSINESS_LOGIN_ORIGIN, "https://jjz.jtgl.beijing.gov.cn"})
 AUTH_ALLOWED_ORIGINS = frozenset({
     ("bjt.beijing.gov.cn", 443), ("portal.bjt.beijing.gov.cn", 443),
     ("ssp.jtgl.beijing.gov.cn", 443), ("jjz.jtgl.beijing.gov.cn", 2443),
@@ -144,6 +146,8 @@ class ApiClient:
             self.settings.validate_live()
         else:
             self.settings.validate_service()
+        if self.settings.base_url not in SERVICE_ORIGINS:
+            raise ConfigError("api.base_url 只支持已核对的官方进京证服务源。")
         try:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError, UnicodeError):

@@ -48,7 +48,7 @@ def prepare_submission(settings, decision, vehicle, client):
         # With companion registration on, the official page's choices are not reproducible here.
         raise DomainError("服务端已开启同行人登记，请在 App 办理并核对后再启用自动续办")
     application = settings.application_for(decision.permit)
-    people = {"jsrxm": driver["jsrxm"], "jszh": driver["jszh"], "dabh": driver["dabh"],
+    people = {"jsrxm": driver["jsrxm"], "jszh": driver["jszh"], "dabh": driver.get("dabh"),
               "txrxx": list(application["txrxx"])}
     client.check(COUNT_CHECK_PATH, {**people, "txrkg": site["txrkg"], "wtxr": ""})
     dates = client.check(DATES_PATH, vehicle_id).get("data")

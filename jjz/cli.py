@@ -528,6 +528,10 @@ def main(argv=None):
                 result["relogin"] = "failed"
         emit(result)
         return 2
+    except Exception:
+        # Unexpected errors still end with one JSON line; only the type name is safe to show.
+        emit({"action": "error", "reason": "程序内部错误，本次已停止", "error_type": type(sys.exception()).__name__})
+        return 2
 
 
 if __name__ == "__main__":

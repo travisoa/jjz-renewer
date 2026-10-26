@@ -10,7 +10,7 @@ import re
 import tempfile
 from urllib.parse import unquote, urlsplit
 
-from .api import ApiClient, ApiError, BUSINESS_LOGIN_ORIGIN, BUSINESS_LOGIN_PATHS, authorization_value
+from .api import ApiClient, ApiError, BUSINESS_LOGIN_PATHS, SERVICE_ORIGINS, authorization_value
 from .auth import AuthError
 from .config import ConfigError
 from .domain import normalize
@@ -18,7 +18,7 @@ from .domain import normalize
 
 def validate_phone_login_settings(settings):
     settings.validate_service()
-    if settings.base_url not in {BUSINESS_LOGIN_ORIGIN, "https://jjz.jtgl.beijing.gov.cn"}:
+    if settings.base_url not in SERVICE_ORIGINS:
         raise ConfigError("手机号登录只支持已核对的官方进京证服务源。")
     if settings.plate == "冀A00000":
         raise ConfigError("请先在配置中填写本人的真实车牌。")

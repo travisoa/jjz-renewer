@@ -29,7 +29,7 @@
 1. 运行 `python3 -m jjz status`（只读）。
    - `action: error` 且 `category: auth_expired`：凭证失效。开启 `auto_relogin` 时程序已自动登录过一次，`relogin: failed` 和 `reason` 说明失败原因。停下，请用户按 docs/login-usage.md 重新取得凭证，再在终端运行 `auth-set`。
    - 输出带 `relogin: succeeded`：程序已自动重新登录并保存新凭证；带 `relogin: shared`：使用同一凭证的其他配置刚登录过，本次直接用了新凭证。两种情况输出都是重新执行后的结果，照常处理，汇报时说明。
-   - 其他 `error`：报告 `reason`。`接口网络请求失败或超时` 可以稍后重试一次。
+   - 其他 `error`：报告 `reason`，带 `error_type` 时一并报告。`接口网络请求失败或超时` 可以稍后重试一次。
    - 正常：报告每张证的类型、状态、起止日期，以及 `can_apply`（服务端当前是否允许新申请）和 `inside_remaining`（内证剩余次数）。
 2. 运行 `python3 -m jjz run`（默认六环外，只预演、不提交），按下表处理返回的 `action`。
 3. 返回 `preview` 且 `server_checks: passed` 时：
@@ -48,7 +48,7 @@
 | `approved` | 查到审核通过的新证 | 报告新证有效期，提醒到 App 核对 |
 | `uncertain` | 提交时超时或网络中断，结果未知 | 绝不重发；稍后再查，若仍没有对应申请，请用户到 App 核实 |
 | `rejected` | 服务端拒绝了这次提交 | 停下，请用户到 App 查看原因 |
-| `error` | 配置、网络或凭证问题 | 按第 1 步处理 |
+| `error` | 配置、网络或凭证问题；带 `error_type` 的是程序内部错误 | 按第 1 步处理 |
 
 ## 定时代理检查
 

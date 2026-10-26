@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import Mock
 from urllib.error import HTTPError, URLError
 
-from jjz.api import ApiClient, ApiError, MAX_RESPONSE_BYTES, ROUTE_PATH, SUBMIT_PATH, _NoRedirect
+from jjz.api import (ApiClient, ApiError, BUSINESS_LOGIN_ORIGIN, MAX_RESPONSE_BYTES, ROUTE_PATH,
+                     SUBMIT_PATH, _NoRedirect)
 from jjz.config import ConfigError, Settings, load_config
 
 
@@ -235,7 +236,7 @@ class ConfigTests(unittest.TestCase):
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.settings = Mock(spec=Settings)
-        self.settings.base_url = "https://example.invalid"
+        self.settings.base_url = "https://jjz.jtgl.beijing.gov.cn"
         self.settings.timeout_seconds = 17
         self.settings.read_authorization.return_value = "private-test-token"
         self.client = ApiClient(self.settings)
@@ -253,18 +254,36 @@ class ApiTests(unittest.TestCase):
         response = self.response(b'{"code":200,"data":{}}')
         self.assertEqual(self.client.state(), {"code": 200, "data": {}})
         req = self.client.opener.open.call_args.args[0]
-        self.assertEqual(req.full_url, "https://example.invalid/pro/applyRecordController/stateList")
+        self.assertEqual(req.full_url, "https://jjz.jtgl.beijing.gov.cn/pro/applyRecordController/stateList")
         self.assertEqual(req.method, "POST")
         self.assertEqual(req.get_header("Authorization"), "private-test-token")
         self.assertEqual(json.loads(req.data), {})
         self.assertEqual(self.client.opener.open.call_args.kwargs["timeout"], 17)
         response.read.assert_called_once_with(MAX_RESPONSE_BYTES + 1)
 
+    def test_credential_is_sent_only_to_official_service_origins(self):
+        for origin in ("https://example.invalid", "https://jjz.jtgl.beijing.gov.cn:443",
+                       "https://jjz.jtgl.beijing.gov.cn.example.invalid"):
+            with self.subTest(origin=origin):
+                self.settings.base_url = origin
+                for method in (self.client.state, lambda: self.client.submit({})):
+                    with self.assertRaises(ConfigError):
+                        method()
+        self.client.opener.open.assert_not_called()
+        self.settings.read_authorization.assert_not_called()
+        self.response(b'{"code":200,"data":{}}')
+        for origin in ("https://jjz.jtgl.beijing.gov.cn", BUSINESS_LOGIN_ORIGIN):
+            with self.subTest(origin=origin):
+                self.settings.base_url = origin
+                self.client.state()
+                self.assertEqual(self.client.opener.open.call_args.args[0].full_url,
+                                 origin + "/pro/applyRecordController/stateList")
+
     def test_check_only_reaches_known_read_only_endpoints(self):
         self.response(b'{"code":200,"data":"0"}')
         self.assertEqual(self.client.check(ROUTE_PATH, {"vId": "v"})["data"], "0")
         req = self.client.opener.open.call_args.args[0]
-        self.assertEqual(req.full_url, "https://example.invalid" + ROUTE_PATH)
+        self.assertEqual(req.full_url, "https://jjz.jtgl.beijing.gov.cn" + ROUTE_PATH)
         self.client.opener.open.reset_mock()
         for path in (SUBMIT_PATH, "/pro/applyRecordController/other"):
             with self.subTest(path=path), self.assertRaises(ApiError):
