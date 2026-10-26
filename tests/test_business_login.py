@@ -224,7 +224,9 @@ class MemoryVerificationTests(unittest.TestCase):
         ]}}
         factory = Mock(return_value=client)
         self.settings.read_authorization = Mock(side_effect=AssertionError("must not read old credential"))
-        self.assertEqual(verify_phone_authorization(self.settings, AUTHORIZATION, factory), 0)
+        # The verified response is returned so the caller can list the account's vehicles.
+        self.assertIs(verify_phone_authorization(self.settings, AUTHORIZATION, factory),
+                      client.state.return_value)
         self.assertEqual(factory.call_args.kwargs, {"authorization": AUTHORIZATION})
         candidate = factory.call_args.args[0]
         self.assertEqual(candidate.base_url, BUSINESS_LOGIN_ORIGIN)

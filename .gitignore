@@ -7,6 +7,10 @@ dist/
 # 本机私有文件：真实配置、凭证、登录信息和运行数据。
 # 示例见 jjz/config.example.toml、jjz/login.example.toml，由 python3 -m jjz init 复制。
 config.toml*
+config-*.toml*
+# 项目根目录下的 TOML 都按私有配置处理，只有 pyproject.toml 入库。
+/*.toml*
+!/pyproject.toml
 login.toml*
 authorization.txt
 secrets/

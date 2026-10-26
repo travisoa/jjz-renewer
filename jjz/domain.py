@@ -34,6 +34,30 @@ def _plate(value: object) -> str:
     return value.strip().upper()
 
 
+def _vehicle_list(response: dict) -> list:
+    if not isinstance(response, dict) or not isinstance(response.get("data"), dict):
+        raise DomainError("查询响应缺少 data 对象")
+    vehicles = response["data"].get("bzclxx")
+    if not isinstance(vehicles, list):
+        raise DomainError("查询响应缺少车辆列表 bzclxx")
+    return vehicles
+
+
+def account_vehicles(response: dict) -> list[tuple[str, dict]]:
+    """Return every bound vehicle with its plate; each plate must be present and distinct."""
+    result: list[tuple[str, dict]] = []
+    for vehicle in _vehicle_list(response):
+        if not isinstance(vehicle, dict):
+            raise DomainError("车辆列表中出现非法对象")
+        plate = _plate(vehicle.get("hphm"))
+        if not plate or any(ord(c) < 32 or ord(c) == 127 for c in plate):
+            raise DomainError("车辆列表中有车辆缺少有效车牌，需在 App 核对")
+        if any(plate == seen for seen, _ in result):
+            raise DomainError("车辆列表中同一车牌出现多次，需在 App 核对")
+        result.append((plate, vehicle))
+    return result
+
+
 def normalize(response: dict, plate: str) -> list[dict]:
     """Select one exact plate and combine both response record collections.
 
@@ -43,11 +67,7 @@ def normalize(response: dict, plate: str) -> list[dict]:
     wanted = _plate(plate)
     if not wanted:
         raise DomainError("必须明确配置目标车牌")
-    if not isinstance(response, dict) or not isinstance(response.get("data"), dict):
-        raise DomainError("查询响应缺少 data 对象")
-    vehicles = response["data"].get("bzclxx")
-    if not isinstance(vehicles, list):
-        raise DomainError("查询响应缺少车辆列表 bzclxx")
+    vehicles = _vehicle_list(response)
     found = False
     records: list[dict] = []
     for vehicle in vehicles:

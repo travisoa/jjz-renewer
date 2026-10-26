@@ -19,7 +19,7 @@ python3 -m jjz auth-set --login --method sms
 python3 -m jjz auth-set --login --method password
 ```
 
-需要供续办使用时，选择一条 `auth-set --login` 命令即可。只希望验证登录时，选择 `login` 命令。使用本项目即视为同意官方登录协议，程序不再询问 `yes`。手机号和密码写在私有文件 `secrets/login.toml` 中，只有 `login` 和 `auth-set --login` 会读取它，`status`、`run` 和定时任务都不加载；没有该文件或两项留空时，在终端隐藏输入。图形验证码由 OCR 在进程内识别并填入，识别失败或连续三次未通过时再由本人输入。短信验证码仍由本人输入。这些值都不通过命令参数传入。
+需要供续办使用时，选择一条 `auth-set --login` 命令即可。只希望验证登录时，选择 `login` 命令。使用本项目即视为同意官方登录协议，程序不再询问 `yes`。手机号和密码写在私有文件 `secrets/login.toml` 中，只有 `login`、`auth-set --login` 和凭证失效时的自动重新登录会读取它，其余时候 `status`、`run` 和定时任务都不加载；没有该文件或两项留空时，在终端隐藏输入。图形验证码由 OCR 在进程内识别并填入，识别失败或连续三次未通过时再由本人输入。短信验证码仍由本人输入。这些值都不通过命令参数传入。
 
 操作流程：
 
@@ -27,7 +27,7 @@ python3 -m jjz auth-set --login --method password
 2. 程序显示官方登录协议地址，按已阅读并同意直接继续。`secrets/login.toml` 已填写 `phone` 和 `password` 时密码登录自动使用这两项；未配置时在终端隐藏输入手机号和密码。
 3. 程序获取图形验证码后，优先用已安装的 `ddddocr` 识别，没有该库时再尝试 `tesseract`。得到 4 到 6 位字母或数字就直接填入。未识别、或官方连续三次拒绝时，才打开图片并由本人输入。短信方式在图形验证码通过后只发送一次登录短信，再由本人输入收到的验证码。
 4. 程序沿官方实际返回的回调处理业务票据，取得业务 `Authorization` 后，只读查询配置中的目标车辆。
-5. 核对成功输出 `action: business_login_verified`、`business_auth_verified: true`。`login` 的 `credential_saved` 为 `false`；`auth-set --login` 在核验成功后直接以 600 权限原子保存，`credential_saved` 为 `true`。
+5. 核对成功输出 `action: business_login_verified`、`business_auth_verified: true`。`login` 的 `credential_saved` 为 `false`；`auth-set --login` 在核验成功后直接以 600 权限原子保存，`credential_saved` 为 `true`；随后为账号下还没有配置的车生成配置，新文件名列在 `configs_created`，见 [README 多辆车](../README.md#多辆车)。自动重新登录不生成配置。
 
 `python3 -m jjz init` 会按 [jjz/login.example.toml](../jjz/login.example.toml) 创建 600 权限的 `secrets/login.toml`；手动创建时须 `chmod 600 secrets/login.toml`，否则程序拒绝读取。`config.toml` 中不能再有 `[login]` 节，否则所有命令都会报错停止。路径可由 `config.toml` 的 `api.login_file` 修改。格式如下：
 
@@ -50,14 +50,14 @@ python3 -m jjz plan
 
 ## 无人值守自动重新登录
 
-示例配置在 `[api]` 默认开启 `auto_relogin = true`，配置中没有这一项时视为关闭。在 `secrets/login.toml` 填写 `phone` 和 `password` 后，`doctor` 会显示 `auto_relogin: ready`；不保存密码时改为 `false`，否则 `doctor` 会提示缺少登录信息。之后 `status`、`plan`、`run` 遇到凭证失效时：
+示例配置在 `[api]` 默认开启 `auto_relogin = true`，配置中没有这一项时视为关闭。在 `secrets/login.toml` 填写 `phone` 和 `password` 后，`doctor` 会显示 `auto_relogin: ready`；不保存密码时改为 `false`，否则 `doctor` 会提示缺少登录信息。之后 `status`、`plan`、`run`、`vehicles` 遇到凭证失效时：
 
 1. 用密码登录一次，图形验证码只由本机识别，最多换 3 张；识别不出或连续被判错就停止，从不等人输入，也不打开图片。
 2. 账号、密码、实名等级等错误不重试，避免反复登录。
 3. 新凭证查询目标车辆核验成功后以 600 权限保存，再把原命令重新执行一次，输出带 `relogin: succeeded`。
 4. 任一步失败时输出 `action: error`、`category: auth_expired`、`relogin: failed` 和原因，原凭证保持不变。
 
-`run` 只在提交前的查询和校验阶段遇到凭证失效时重新执行，此时还没有写入提交记录；提交请求本身被拒绝时按 `rejected` 处理，不会重登后重发。每次命令最多自动登录一次，调度间隔较短时持续失败会在每次运行各尝试一次，收到失败通知后请及时处理。
+`run` 只在提交前的查询和校验阶段遇到凭证失效时重新执行，此时还没有写入提交记录；提交请求本身被拒绝时按 `rejected` 处理，不会重登后重发。每次命令最多自动登录一次，调度间隔较短时持续失败会在每次运行各尝试一次，收到失败通知后请及时处理。几份配置共用同一凭证文件时，自动重新登录依次进行：后到的最多等 2 分钟，期间其他配置已保存新凭证就直接使用（`relogin: shared`），等待超时按失败处理。
 
 ## 手动输入凭证
 

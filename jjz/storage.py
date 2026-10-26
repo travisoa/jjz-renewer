@@ -7,10 +7,14 @@ from pathlib import Path
 import fcntl
 import os
 import sqlite3
+import time
 
 
 class BusyError(RuntimeError):
     pass
+
+
+CREDENTIAL_WAIT_SECONDS = 120
 
 
 def vehicle_key(plate: str) -> str:
@@ -22,19 +26,36 @@ def attempt_key(plate: str, permit: str, apply_date: str) -> str:
 
 
 @contextmanager
-def exclusive(data_dir: Path):
-    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    lock_path = data_dir / "run.lock"
+def _locked(lock_path: Path, *, timeout: float = 0, busy: str = "已有另一个任务运行，本次跳过", on_wait=None):
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise BusyError("已有另一个任务运行，本次跳过") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise BusyError(busy) from None
+                if on_wait is not None:
+                    on_wait()
+                    on_wait = None
+                time.sleep(0.2)
         yield
     finally:
         os.close(fd)
+
+
+def exclusive(data_dir: Path):
+    return _locked(data_dir / "run.lock")
+
+
+def credential_lock(auth_file: Path, on_wait=None):
+    """Wait a bounded time for another config's login that saves the same credential file."""
+    return _locked(auth_file.with_name(auth_file.name + ".lock"), timeout=CREDENTIAL_WAIT_SECONDS,
+                   busy="等待使用同一凭证的其他配置重新登录超时", on_wait=on_wait)
 
 
 class Journal:

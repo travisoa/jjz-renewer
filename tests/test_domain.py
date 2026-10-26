@@ -48,6 +48,12 @@ class NormalizeTests(unittest.TestCase):
     def test_null_record_arrays(self):
         self.assertEqual([], normalize(self.response([{"hphm": "冀ATEST01", "ecbzxx": None, "bzxx": None}]), "冀ATEST01"))
 
+    def test_other_bound_vehicles_do_not_block_the_target(self):
+        # The binding limit is a server setting that may change; it must not stop the target vehicle.
+        vehicles = [{"hphm": "冀ATEST01", "ecbzxx": [record()]}] + [
+            {"hphm": f"冀BOTHER{n}", "ecbzxx": None} for n in range(4)]
+        self.assertEqual(1, len(normalize(self.response(vehicles), "冀ATEST01")))
+
     def test_unknown_vehicle(self):
         with self.assertRaises(DomainError):
             normalize(self.response([]), "冀ATEST01")

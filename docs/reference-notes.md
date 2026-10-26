@@ -33,6 +33,7 @@
 - 页面提交目的地区县名 `area`、目的地坐标 `jjdzgdjd`/`jjdzgdwd`，以及 `jingState`（固定为空串）。`sfzj=1` 时发在京地址 `zjxxdz` 及坐标，并清空道路字段；`sfzj=0` 时发道路 `jjlk`、`jjlkmc` 及坐标 `jjlkgdjd`/`jjlkgdwd`，并清空在京地址字段。
 - `sqdzgdjd`/`sqdzgdwd` 是提交时手机的当前定位，不是目的地坐标。`jjmd`/`jjmdmc` 可多选，用逗号拼接。
 - 提交前依次调用：`applyVehicleCheck`（`data` 为 `"200"` 才继续）、`getJsrxx`、`getConfigRecordInfo`（取同行人开关 `txrkg`）、`applyCheckNum`、`checkHandle`（返回可选进京日期 `jjrqs`，格式 `YYYY-MM-DD`）、`checkInputRoadInfo`（`data` 不为 `"0"` 时要求填写行驶路线 `xslx`）。
+- 每个账号最多绑定 3 辆车（2026-10-26 核对）：车辆管理页（`pagesClgl-list`）从 `/vehicleController/getUserIdInfo` 读取已绑定车辆，按站点配置 `yhbdsx` 禁用"添加车辆"，已绑定 3 辆时提示无法继续添加。程序不调用该接口；上限来自站点配置，可能调整，所以程序不按它限制 `stateList` 的车辆数组 `bzclxx`。
 - 区县、进京目的、进京道路的代码来自 `/pro/ucDicController/queryDic`，`type` 分别为 `qjxz`、`jjmd`、`jjlk`（`jjlk` 需带 `vId`）。
 
 ## AUTH 来源与有效期

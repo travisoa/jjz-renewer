@@ -1,7 +1,9 @@
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+import fcntl
 import json
+import os
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -10,6 +12,7 @@ from jjz.api import ApiError, BUSINESS_LOGIN_ORIGIN, UNIFIED_AUTH_CALLBACK_URL
 from jjz.auth import AuthError
 from jjz.cli import main, unattended_login
 from jjz.config import ConfigError, Settings, load_config
+from jjz.domain import DomainError
 
 
 PLATE = "冀ATEST01"
@@ -126,12 +129,13 @@ class AutoReloginCliTests(unittest.TestCase):
 
     def cli(self, *args, login=None, execute=None, states=()):
         client = Mock()
-        client.state.side_effect = list(states)
+        client.state.side_effect = states if callable(states) else list(states)
         output = StringIO()
+        self.progress = StringIO()
         with patch("jjz.cli.ApiClient", return_value=client), \
                 patch("jjz.cli.unattended_login", side_effect=login) as relogin, \
                 patch("jjz.cli.execute", side_effect=execute) as run, \
-                redirect_stdout(output), redirect_stderr(StringIO()):
+                redirect_stdout(output), redirect_stderr(self.progress):
             code = main(["--config", str(self.config), *args])
         return code, json.loads(output.getvalue()), relogin, run, client
 
@@ -142,6 +146,60 @@ class AutoReloginCliTests(unittest.TestCase):
         self.assertEqual(result["action"], "status")
         self.assertEqual(result["relogin"], "succeeded")
         relogin.assert_called_once()
+        self.assertEqual(client.state.call_count, 2)
+
+    def test_login_holds_the_shared_credential_lock(self):
+        lock = self.auth.with_name(self.auth.name + ".lock")
+
+        def login(settings):
+            fd = os.open(lock, os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(fd)
+
+        expired = ApiError("接口拒绝凭证，请更新本地 Authorization。", auth_expired=True)
+        code, result, relogin, _, _ = self.cli("status", login=login, states=[expired, STATE])
+        self.assertEqual(code, 0)
+        self.assertEqual(result["relogin"], "succeeded")
+        relogin.assert_called_once()
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+
+    def test_waiting_for_another_configs_login_stops_at_the_limit(self):
+        lock = self.auth.with_name(self.auth.name + ".lock")
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)  # another config is still logging in
+        expired = ApiError("接口拒绝凭证，请更新本地 Authorization。", auth_expired=True)
+        with patch("jjz.storage.CREDENTIAL_WAIT_SECONDS", 0.3):
+            code, result, relogin, _, _ = self.cli("status", states=[expired])
+        self.assertEqual(code, 2)
+        self.assertEqual(result["category"], "auth_expired")
+        self.assertEqual(result["relogin"], "failed")
+        self.assertIn("超时", result["reason"])
+        relogin.assert_not_called()
+        self.assertIn("等待", self.progress.getvalue())
+
+    def test_credential_saved_by_another_config_is_used_without_logging_in(self):
+        expired = ApiError("接口拒绝凭证，请更新本地 Authorization。", auth_expired=True)
+        queries = []
+
+        def query():
+            queries.append(None)
+            if len(queries) > 1:
+                return STATE
+            # Another vehicle's config replaces the shared credential meanwhile.
+            replacement = self.auth.with_name("replacement")
+            replacement.write_text("SYNTHETIC_NEW_AUTHORIZATION", encoding="utf-8")
+            os.replace(replacement, self.auth)
+            raise expired
+
+        code, result, relogin, _, client = self.cli("status", states=query)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["action"], "status")
+        self.assertEqual(result["relogin"], "shared")
+        relogin.assert_not_called()
         self.assertEqual(client.state.call_count, 2)
 
     def test_disabled_switch_keeps_reporting_expired_credential(self):
@@ -162,6 +220,17 @@ class AutoReloginCliTests(unittest.TestCase):
         self.assertEqual(result["category"], "auth_expired")
         self.assertEqual(result["relogin"], "failed")
         self.assertIn("本机未能识别图形验证码", result["reason"])
+        self.assertEqual(client.state.call_count, 1)
+
+    def test_login_that_cannot_find_the_vehicle_reports_failed_relogin(self):
+        # For example the saved login belongs to another account: login works, the vehicle is missing.
+        expired = ApiError("接口拒绝凭证，请更新本地 Authorization。", auth_expired=True)
+        mismatch = DomainError("接口中未找到目标车辆，请检查车牌及当前登录账号")
+        code, result, relogin, _, client = self.cli("status", login=mismatch, states=[expired])
+        self.assertEqual(code, 2)
+        self.assertEqual(result["category"], "auth_expired")
+        self.assertEqual(result["relogin"], "failed")
+        self.assertIn("接口中未找到目标车辆", result["reason"])
         self.assertEqual(client.state.call_count, 1)
 
     def test_other_errors_do_not_trigger_login(self):

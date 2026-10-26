@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+import json
 from pathlib import Path
 import re
 import stat
@@ -66,6 +67,7 @@ class Settings:
     inside_application: dict = field(default_factory=dict)
     login_file: Path | None = None
     auto_relogin: bool = False
+    auto_renew: bool = True
 
     def read_authorization(self) -> str:
         """Read a single local header value without ever including it in errors."""
@@ -224,6 +226,10 @@ def load_config(path: Path | str) -> Settings:
     enabled = renewal.get("submission_enabled", False)
     if type(enabled) is not bool:
         raise ConfigError("renewal.submission_enabled 必须是布尔值。")
+    # Configs written before this switch existed keep renewing automatically.
+    auto_renew = renewal.get("auto_renew", True)
+    if type(auto_renew) is not bool:
+        raise ConfigError("renewal.auto_renew 必须是布尔值。")
     relogin = api.get("auto_relogin", False)
     if type(relogin) is not bool:
         raise ConfigError("api.auto_relogin 必须是布尔值。")
@@ -241,5 +247,67 @@ def load_config(path: Path | str) -> Settings:
         outside_lead_days=lead, submission_enabled=enabled,
         timeout_seconds=float(timeout), data_dir=local_path(data_dir),
         application=dict(application), inside_application=dict(inside_application),
-        login_file=local_path(login_file), auto_relogin=relogin,
+        login_file=local_path(login_file), auto_relogin=relogin, auto_renew=auto_renew,
     )
+
+
+_TABLE_HEADER = re.compile(r"\s*\[\s*([A-Za-z0-9_-]+)\s*\]\s*(?:#.*)?")
+
+
+def _assign(lines: list[str], table: str, key: str, literal: str) -> None:
+    """Set key in a plain [table] of a line-oriented config, adding the line or table if absent."""
+    start = end = None
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("["):
+            continue
+        if start is not None:
+            end = index
+            break
+        match = _TABLE_HEADER.fullmatch(line)
+        if match and match.group(1) == table:
+            start = index
+    if start is None:
+        lines += ["", f"[{table}]", f"{key} = {literal}"]
+        return
+    assignment = re.compile(r"\s*" + re.escape(key) + r"\s*=")
+    for index in range(start + 1, len(lines) if end is None else end):
+        if assignment.match(lines[index]):
+            lines[index] = f"{key} = {literal}"
+            return
+    lines.insert(start + 1, f"{key} = {literal}")
+
+
+def rewrite_config(base_text: str, changes: dict) -> str:
+    """Set {(table, key): value} in a config, keeping every other line and comment.
+
+    A layout the line edits cannot reproduce exactly is refused rather than written.
+    """
+    lines = base_text.splitlines()
+    for (table, key), value in changes.items():
+        # JSON string escapes are a subset of TOML basic-string escapes.
+        _assign(lines, table, key, json.dumps(value, ensure_ascii=False))
+    text = "\n".join(lines) + "\n"
+    refused = ConfigError("无法按现有配置的格式自动生成新配置，请手动复制后修改车牌和数据目录。")
+    try:
+        expected, actual = tomllib.loads(base_text), tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        raise refused from None
+    for (table, key), value in changes.items():
+        section = expected.setdefault(table, {})
+        if not isinstance(section, dict):
+            raise refused
+        section[key] = value
+    if actual != expected:
+        raise refused
+    return text
+
+
+def config_for_vehicle(base_text: str, plate: str, data_dir: str) -> str:
+    """Copy a config for another vehicle of the same account, with both switches off.
+
+    Only the plate, data directory and the two switches change; comments and
+    application templates are kept.
+    """
+    return rewrite_config(base_text, {("vehicle", "plate"): plate, ("storage", "data_dir"): data_dir,
+                                      ("renewal", "submission_enabled"): False,
+                                      ("renewal", "auto_renew"): False})

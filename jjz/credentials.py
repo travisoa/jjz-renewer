@@ -53,12 +53,14 @@ def callback_ticket(url):
 
 
 def verify_phone_authorization(settings, authorization, client_factory=None):
+    """Return the state response once it shows the configured vehicle."""
     validate_phone_login_settings(settings)
     # The new credential stays in memory. Do not inspect or temporarily copy
     # the existing authorization file merely to test a new login.
     client = (client_factory or ApiClient)(settings, authorization=authorization)
-    records = normalize(client.state(), settings.plate)
-    return len(records)
+    response = client.state()
+    normalize(response, settings.plate)
+    return response
 
 
 def save_authorization(settings, authorization):
