@@ -125,17 +125,17 @@ class RuntimeTests(unittest.TestCase):
                           DATES_PATH, ROUTE_PATH])
         self.assertEqual(dict(client.checked)[COUNT_CHECK_PATH],
                          {"jsrxm": "SYNTHETIC_PERSON", "jszh": "SYNTHETIC_IDENTITY", "dabh": "",
-                          "txrxx": [], "txrkg": "0", "wtxr": ""})
+                          "rylx": "0", "txrxx": [], "txrkg": "0", "wtxr": ""})
         self.assertEqual(dict(client.checked)[DATES_PATH],
                          {"vId": "synthetic-vehicle", "jjzzl": "02", "hphm": PLATE})
         payload = client.submissions[0]
         self.assertNotIn("applyIdOld", payload)
         self.assertNotIn("sqdzbdjd", payload)
         self.assertEqual({key: payload[key] for key in ("vId", "hphm", "hpzl", "cllx", "elzsfkb",
-                                                         "jjzzl", "jjrq", "jingState", "dabh")},
+                                                         "jjzzl", "jjrq", "jingState", "dabh", "rylx")},
                          {"vId": "synthetic-vehicle", "hphm": PLATE, "hpzl": "02", "cllx": "01",
                           "elzsfkb": True, "jjzzl": "02", "jjrq": "2026-10-26",
-                          "jingState": "", "dabh": ""})
+                          "jingState": "", "dabh": "", "rylx": "0"})
         self.assertNotIn("sycs", payload)
         self.assertEqual((payload["jjlk"], payload["zjxxdz"], payload["zjxxdzgdjd"]), ("00306", "", ""))
 

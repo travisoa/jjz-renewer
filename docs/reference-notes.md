@@ -30,9 +30,10 @@
 - 申请体不再带 `applyIdOld`，也不发百度坐标 `sqdzbdjd`/`sqdzbdwd`。
 - 车辆字段取自查询结果里的车辆对象：`vId`、`hphm`、`hpzl`、`ylzsfkb`、`elzsfkb`、`ylzmc`、`elzmc`、`ylzqyms`、`elzqyms`、`cllx`。其中 `elzsfkb`/`ylzsfkb` 是服务端给出的"六环外/六环内当前可办"标志，选证页（`pagesSqbz/certype`）只据此决定能否选择，不要求同类型的历史证件，所以两类证可以直接互相切换；不可办时显示 `elzqyms`/`ylzqyms` 中的原因。2026-10-26 实测：持有生效中的六环外证时办理六环内证，审核通过后查询结果只返回六环内证，不再返回原六环外证。
 - 驾驶人信息取自 `getJsrxx`（`jsrxm`、`jszh`、`dabh`），不是取自证件记录。
+- 驾驶人页（`pagesSqbz-sqbz`）有「港澳台及外籍人士」选项，对应字段 `rylx`（选中为 `"1"`，否则 `"0"`）。页面按 `getJsrxx` 返回的 `rylx` 预选，`applyCheckNum` 和提交请求体都带上它；缺少该字段时 `applyCheckNum` 返回业务错误（2026-11-01 核对）。程序固定按非港澳台及外籍人士发送 `"0"`。
 - 页面提交目的地区县名 `area`、目的地坐标 `jjdzgdjd`/`jjdzgdwd`，以及 `jingState`（固定为空串）。`sfzj=1` 时发在京地址 `zjxxdz` 及坐标，并清空道路字段；`sfzj=0` 时发道路 `jjlk`、`jjlkmc` 及坐标 `jjlkgdjd`/`jjlkgdwd`，并清空在京地址字段。
 - `sqdzgdjd`/`sqdzgdwd` 是提交时手机的当前定位，不是目的地坐标。`jjmd`/`jjmdmc` 可多选，用逗号拼接。
-- 提交前依次调用：`applyVehicleCheck`（`data` 为 `"200"` 才继续）、`getJsrxx`、`getConfigRecordInfo`（取同行人开关 `txrkg`）、`applyCheckNum`、`checkHandle`（返回可选进京日期 `jjrqs`，格式 `YYYY-MM-DD`）、`checkInputRoadInfo`（`data` 不为 `"0"` 时要求填写行驶路线 `xslx`）。
+- 提交前依次调用：`applyVehicleCheck`（`data` 为 `"200"` 才继续）、`getJsrxx`、`getConfigRecordInfo`（取同行人开关 `txrkg`）、`applyCheckNum`（驾驶人、`rylx`、同行人）、`checkHandle`（返回可选进京日期 `jjrqs`，格式 `YYYY-MM-DD`）、`checkInputRoadInfo`（`data` 不为 `"0"` 时要求填写行驶路线 `xslx`）。
 - 每个账号最多绑定 3 辆车（2026-10-26 核对）：车辆管理页（`pagesClgl-list`）从 `/vehicleController/getUserIdInfo` 读取已绑定车辆，按站点配置 `yhbdsx` 禁用"添加车辆"，已绑定 3 辆时提示无法继续添加。程序不调用该接口；上限来自站点配置，可能调整，所以程序不按它限制 `stateList` 的车辆数组 `bzclxx`。
 - 区县、进京目的、进京道路的代码来自 `/pro/ucDicController/queryDic`，`type` 分别为 `qjxz`、`jjmd`、`jjlk`（`jjlk` 需带 `vId`）。
 
