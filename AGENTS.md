@@ -10,6 +10,12 @@
 - 一辆车一份配置：默认 `config.toml`，其他车辆用 `config-<名称>.toml`，命令加 `--config` 指定，每份配置用独立的 `[storage].data_dir`。`vehicles` 只读列出账号下的车辆和对应配置；`auth-set --login` 保存凭证后、以及 `vehicles --create`，会为还没有配置的车生成 `config-car2.toml` 等，新配置的 `submission_enabled` 和 `auto_renew` 都是 `false`。`[renewal].auto_renew = false` 的车是按需办理，没写时为 `true`（自动续办）。同一账号下的车共用 `secrets/` 里的凭证和登录文件，自动重新登录按凭证文件互斥。说明见 README「多辆车」。
 - 背景资料：[README](README.md)、[办理凭证获取](docs/login-usage.md)、[参考项目及与官方 H5 的差异](docs/reference-notes.md)。
 
+## 飞书通知
+
+- 用飞书私信本人通知办理、检查结果时，默认发卡片消息（`msg_type=interactive`）；用户明确要求其他格式时照办。
+- 办理、续办、检查和复查结果统一使用项目技能 [jjz-feishu-card](.agents/skills/jjz-feishu-card/SKILL.md)，由该技能的 `build_card.py` 生成固定版式；不手写卡片 JSON，也不在生成结果上增删组件。
+- 接收人 open_id 从环境变量 `FEISHU_OWNER_OPEN_ID` 读取，属于本机私有配置，不写进仓库。
+
 ## 硬性规则
 
 1. **凭证**：不读取、打印或复制 `secrets/` 下任何文件的内容（业务凭证 `authorization.txt`、登录手机号和密码 `login.toml`），更不把这些值放进命令参数、日志、聊天、代码或代理记忆。更新业务凭证只能由用户本人在交互式终端运行 `python3 -m jjz auth-set` 输入本人 App 查询请求里的凭证，或运行 `python3 -m jjz auth-set --login --method password`（也支持 `sms`），完成手机号登录和目标车辆查询核验后直接保存。配置的 `[api].auto_relogin = true` 时，`status`、`plan`、`run`、`vehicles` 遇到凭证失效会由程序自己用 `secrets/login.toml` 的密码和本机 OCR 登录一次，核验后保存新凭证再重新执行；验证码识别不出或登录失败就直接报错，不等人输入。用户使用本项目即视为同意相关协议，程序内所有 `yes` 确认默认同意，不再询问。密码登录在 `secrets/login.toml` 配置了手机号和密码时由程序自行读取，只有 `login`、`auth-set --login` 和自动重新登录会读它。图形验证码由本机 OCR 识别并填入；交互登录时未识别出结果，或官方连续三次判定验证码错误，才由本人输入。代理可以在用户的终端标签页里启动这些命令，但不得替用户输入账号、密码或验证码，也不得读取终端里的验证码。`login` 只验证、不保存。获取方法见 [docs/login-usage.md](docs/login-usage.md)。
