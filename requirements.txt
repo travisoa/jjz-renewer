@@ -1,5 +1,5 @@
 # 程序核心只用 Python 标准库，查询、续办和测试都不需要安装任何包。
-# 本文件只列可选的图形验证码识别依赖，须装进与运行解释器同版本的项目 .venv：
+# 本文件列可选的图形验证码识别依赖，须装进与运行解释器同版本的项目 .venv；可选的飞书 CLI 见文末：
 #   /opt/homebrew/opt/python@3.14/bin/python3.14 -m venv .venv
 #   .venv/bin/python -m pip install -r requirements.txt
 # 未安装时，登录改为由本人输入图形验证码。环境说明见 README「运行环境」。
@@ -13,3 +13,7 @@ opencv-python==5.0.0.93
 flatbuffers==25.12.19
 packaging==26.3
 protobuf==7.36.2
+
+# 可选：系统定时任务的飞书通知（run --notify）用飞书 CLI lark-cli。它是 npm 包，pip 装不了，需另行安装：
+#   npm install -g @larksuite/cli@1.0.98
+# 装好后按 README「飞书通知」绑定机器人。程序通过命令行调用它，不需要任何 Python 包。

@@ -23,6 +23,10 @@ auto_renew = true # 自动续办；false 为按需办理：定时任务和定时
 [storage]
 data_dir = "data" # 提交记录、运行锁和定时任务日志；每辆车的配置各用独立目录，如 data/car2
 
+[notify]
+# 可选：系统定时任务带 --notify 时，结果需要本人处理就用本机 lark-cli 机器人私信飞书卡片，见 README「飞书通知」
+feishu_open_id = "" # 接收人的 open_id（ou_ 开头）；留空不发送
+
 [application]
 # 对应 App「进京信息」页。车辆、驾驶人、证件类型和进京日期由程序在提交前向服务端获取。
 # 坐标均为高德（GCJ-02）经纬度。空值会阻止真实提交。

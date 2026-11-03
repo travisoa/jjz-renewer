@@ -68,6 +68,7 @@ class Settings:
     login_file: Path | None = None
     auto_relogin: bool = False
     auto_renew: bool = True
+    feishu_open_id: str = ""
 
     def read_authorization(self) -> str:
         """Read a single local header value without ever including it in errors."""
@@ -202,6 +203,7 @@ def load_config(path: Path | str) -> Settings:
     storage = section("storage")
     application = section("application")
     inside_application = section("inside_application")
+    notify = section("notify")
     if "login" in config:
         # Keep the account password out of the file that every command loads.
         raise ConfigError("登录手机号和密码只能放在 secrets/login.toml，请把 config.toml 中的 [login] 整节移过去。")
@@ -236,6 +238,9 @@ def load_config(path: Path | str) -> Settings:
     timeout = api.get("timeout_seconds", 20)
     if type(timeout) not in (int, float) or not 1 <= timeout <= 120:
         raise ConfigError("api.timeout_seconds 必须在 1 至 120 秒之间。")
+    open_id = string(notify, "feishu_open_id", "", "notify.feishu_open_id").strip()
+    if open_id and not re.fullmatch(r"ou_[0-9A-Za-z]+", open_id):
+        raise ConfigError("notify.feishu_open_id 必须是 ou_ 开头的飞书 open_id。")
 
     def local_path(value: str) -> Path:
         expanded = Path(value).expanduser()
@@ -248,6 +253,7 @@ def load_config(path: Path | str) -> Settings:
         timeout_seconds=float(timeout), data_dir=local_path(data_dir),
         application=dict(application), inside_application=dict(inside_application),
         login_file=local_path(login_file), auto_relogin=relogin, auto_renew=auto_renew,
+        feishu_open_id=open_id,
     )
 
 

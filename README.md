@@ -9,7 +9,8 @@
 - 先把提交意图写入 SQLite 再提交；超时、中断或结果不明时只查询核验，不会盲目重发。
 - 业务凭证有两种取得方式：在终端用手机号（密码或短信）登录，核验目标车辆后保存；或从北京交警 App 的查询请求中取得后手动保存。
 - 图形验证码可由 `ddddocr` 在进程内自动识别，识别失败时再由本人输入。
-- 凭证到期后，下次办理时自动登录续期（`auto_relogin`，示例配置默认开启，用密码和本机验证码识别）；程序只输出结果，通知由 AI 代理定时任务负责发送。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
+- 凭证到期后，下次办理时自动登录续期（`auto_relogin`，示例配置默认开启，用密码和本机验证码识别）。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
+- 系统定时任务可选用飞书机器人私信结果卡片，办理没成功也能及时知道；AI 代理定时任务由代理推送通知。
 
 ## 运行环境
 
@@ -21,7 +22,8 @@
 | `openssl` 命令 | 在 `PATH` 中，支持 `pkey`、`pkeyutl` | 手机号登录时按官方协议做 RSA 加密 | OpenSSL 3.6（macOS）、3.5（Debian 13）；macOS 自带的 LibreSSL 3.3 |
 | `ddddocr`、Pillow（可选） | 按 [requirements.txt](requirements.txt) 装进项目 `.venv`，`.venv` 须与运行程序的解释器是同一个 Python 小版本 | 自动识别图形验证码 | ddddocr 1.6.1、Pillow 13.0（macOS） |
 | `tesseract`（可选） | 在 `PATH` 中 | `ddddocr` 不可用时的备用识别 | — |
-| 网络 | 能访问 `jjz.jtgl.beijing.gov.cn`（443、2443）、`bjt.beijing.gov.cn`、`portal.bjt.beijing.gov.cn`、`ssp.jtgl.beijing.gov.cn` | 查询、提交前校验、手机号登录 | — |
+| `lark-cli`（可选） | 飞书 CLI，npm 包 `@larksuite/cli`，需要 Node.js；已用 `lark-cli config init` 绑定飞书机器人 | 系统定时任务的飞书通知 | 1.0.98（macOS） |
+| 网络 | 能访问 `jjz.jtgl.beijing.gov.cn`（443、2443）、`bjt.beijing.gov.cn`、`portal.bjt.beijing.gov.cn`、`ssp.jtgl.beijing.gov.cn`；飞书通知另需访问 `open.feishu.cn` | 查询、提交前校验、手机号登录、飞书通知 | — |
 
 ```sh
 # macOS 以 Homebrew 为例；已有 Python 3.11+ 和 openssl 时可跳过
@@ -92,7 +94,7 @@ python3 -m jjz --config config-car2.toml doctor
 
 定时任务有两种，选一种即可，都只办六环外证，并跳过按需办理（`auto_renew = false`）的车：
 
-- **系统定时任务**：由 macOS launchd 或 Linux systemd 直接运行本程序，结果只写日志。
+- **系统定时任务**：由 macOS launchd 或 Linux systemd 直接运行本程序，结果写日志，可选用飞书机器人通知（见「飞书通知」）。
 - **AI 代理定时任务**：在 Claude 应用等支持定时任务的代理里新建任务，代理按 [AGENTS.md](AGENTS.md) 办理和检查，汇报结果，需要你处理时推送通知。运行时间自己定，建议到期当天 `earliest_time` 之后办理一次，稍晚再检查一次。
 
 不管用哪种，实际提交都还要求配置里 `[renewal].submission_enabled = true`；开关没开时只做校验，返回 `blocked`。同一辆车只在一台机器上定时运行，提交记录不跨机器共享。
@@ -104,9 +106,9 @@ python3 -m jjz --config config-car2.toml doctor
 - **每天一次（默认）**：每天检查一次，到期当天自动续办，其余日子只返回 `wait`。
 - **每周一次**：加 `--weekday`，在这天办理一次，1 小时后再运行一次核对结果，前一次没提交成功时顺带补办（`--check-after` 改间隔分钟数）。适合证件固定在每周同一天到期。
 
-运行时间默认是 `earliest_time`（默认 08:00）后 10 分钟，`--time` 可改，不能早于 `earliest_time`。
+运行时间默认是 `earliest_time`（默认 08:00）后 10 分钟，`--time` 可改，不能早于 `earliest_time`。星期和时间以运行定时任务的主机本地时间为准。
 
-**macOS**：`schedule` 生成调度文件，不自动加载。`--weekday` 是星期几（1 为周一，7 为周日），时间按本机时区。任务名是 `local.jjz.renew.<配置文件名>`，每周排法的两次运行在同一个任务里。
+**macOS**：`schedule` 生成调度文件，不自动加载。`--weekday` 是星期几（1 为周一，7 为周日）。任务名是 `local.jjz.renew.<配置文件名>`，每周排法的两次运行在同一个任务里。
 
 ```sh
 python3 -m jjz schedule --submit                              # 每天 08:10；不带 --submit 只预演
@@ -158,6 +160,19 @@ loginctl enable-linger "$USER"                                # 用户未登录�
 
 平时也可以直接让 Codex 或 Claude Code 在本项目里"看下进京证""续一下"。
 
+## 飞书通知
+
+系统定时任务可以选用飞书机器人通知结果。任务带 `--notify` 时，只要结果需要你处理（可办理、已提交、被拦下、结果不明、被拒绝或出错），就由本机的飞书 CLI（[`lark-cli`](https://www.npmjs.com/package/@larksuite/cli)）以机器人身份私信你一张卡片；未到续办日等 `wait` 不发。卡片版式和 AI 代理定时任务发的一样，规范见项目技能 [jjz-feishu-card](.agents/skills/jjz-feishu-card/SKILL.md)。
+
+1. 安装 Node.js 和飞书 CLI：`npm install -g @larksuite/cli@1.0.98`。
+2. 运行 `lark-cli config init`，按提示在浏览器里创建或绑定一个飞书自建应用。应用要开启机器人能力、有以应用身份发消息的权限（`im:message:send_as_bot`），可用范围包含你本人。
+3. 查自己的 open_id：运行 `lark-cli auth login` 并按提示授权，再运行 `lark-cli contact +get-user --as user`，输出里 `ou_` 开头的 `open_id` 就是。
+4. 发一条测试消息，确认机器人能私信到你：`lark-cli im +messages-send --as bot --user-id ou_xxx --text "进京证通知测试"`。
+5. 把 open_id 填进配置的 `[notify]`：`feishu_open_id = "ou_xxx"`。open_id 只放在本机配置里，不要写进仓库。
+6. 生成定时任务时加 `--notify`，如 `python3 -m jjz schedule --submit --notify`，`schedule` 会把 lark-cli 和 Node.js 所在目录写进任务的 `PATH`。Linux 在 `ExecStart` 末尾加 `--notify`；lark-cli 不在 `/usr/bin` 这类默认目录时，再加一行 `Environment=PATH=<lark-cli 和 node 所在目录>:/usr/bin:/bin`。
+
+日志里每次运行的结果带 `notify`：`sent` 是卡片已发出，`sent_text` 是卡片失败、改发了文字，`failed` 是没发出去，原因见 `notify_reason`。通知失败不影响办理结果和退出码。卡片只含程序输出的脱敏信息。AI 代理定时任务自己发通知，运行的命令不带 `--notify`，以免重复。
+
 ## 提交流程与保护
 
 提交内容按北京交警当前的 H5 申请页组装：车辆字段取自查询结果，驾驶人信息取自官方驾驶人接口，再合并申请模板。提交前依次调用官方的车辆校验、人数校验、可选日期查询和行驶路线检查。遇到以下情况只返回 `blocked`，不写提交记录：
@@ -194,13 +209,14 @@ python3 -m jjz resolve --attempt '<history 中的 key>' --confirmed-not-submitte
 ## 项目结构
 
 ```
-jjz/              程序（api、config、domain、runtime、storage、credentials、auth、captcha_ocr、cli）
+jjz/              程序（api、config、domain、runtime、storage、credentials、auth、captcha_ocr、feishu、cli）
                   及示例配置 config.example.toml、login.example.toml
 tests/            离线测试：python3 -m unittest discover -s tests
 docs/             凭证获取与登录验证范围、参考研究
 examples/         演示用响应样本（演示车牌与示例配置一致）：
                   python3 -m jjz --config jjz/config.example.toml plan --fixture examples/state.json --at 2026-10-25T09:00:00+08:00
-requirements.txt  可选的验证码识别依赖（核心无第三方依赖）
+requirements.txt  可选的验证码识别依赖（核心无第三方依赖），文末注明可选的飞书 CLI
+.agents/skills/   代理技能：jjz-feishu-card 飞书卡片规范（.claude/skills 链接到这里）
 AGENTS.md         代理操作说明（CLAUDE.md 引用同一份）
 ```
 

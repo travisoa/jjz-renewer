@@ -5,7 +5,7 @@
 ## 项目概况
 
 - 标准库 Python CLI，入口 `python3 -m jjz`，需在项目根目录运行。本机解释器是 `/opt/homebrew/opt/python@3.14/bin/python3.14`，定时任务固定使用它。
-- `jjz/`：`api.py` 官方接口与业务登录交换、`config.py` 配置与申请模板校验、`domain.py` 记录筛选与续办计划、`runtime.py` 执行与提交保护、`storage.py` SQLite 提交记录与进程锁、`credentials.py` 凭证核验与保存、`auth.py` 手机号统一认证、`cli.py` 命令行。手机号加密通过标准库调用本机 OpenSSL。核心无第三方 Python 依赖；可选的验证码识别依赖列在 `requirements.txt`，装在同版本 `.venv`。环境要求见 README「运行环境」。
+- `jjz/`：`api.py` 官方接口与业务登录交换、`config.py` 配置与申请模板校验、`domain.py` 记录筛选与续办计划、`runtime.py` 执行与提交保护、`storage.py` SQLite 提交记录与进程锁、`credentials.py` 凭证核验与保存、`auth.py` 手机号统一认证、`feishu.py` 飞书卡片生成与 lark-cli 发送、`cli.py` 命令行。手机号加密通过标准库调用本机 OpenSSL。核心无第三方 Python 依赖；可选的验证码识别依赖列在 `requirements.txt`，装在同版本 `.venv`。环境要求见 README「运行环境」。
 - 项目根目录下的 `.toml` 配置（`config.toml`、`config-*.toml`；`pyproject.toml` 除外）、`secrets/`、`data/` 是本机私有文件，已列入 `.gitignore`；对应示例是 `jjz/config.example.toml` 和 `jjz/login.example.toml`，`init` 只补建缺少的文件。配置文件不放账号密码，代理可以读取它排查问题（个人信息按规则 6 处理）。各配置数据目录下的 `journal.sqlite3` 是提交保护记录。
 - 一辆车一份配置：默认 `config.toml`，其他车辆用 `config-<名称>.toml`，命令加 `--config` 指定，每份配置用独立的 `[storage].data_dir`。`vehicles` 只读列出账号下的车辆和对应配置；`auth-set --login` 保存凭证后、以及 `vehicles --create`，会为还没有配置的车生成 `config-car2.toml` 等，新配置的 `submission_enabled` 和 `auto_renew` 都是 `false`。`[renewal].auto_renew = false` 的车是按需办理，没写时为 `true`（自动续办）。同一账号下的车共用 `secrets/` 里的凭证和登录文件，自动重新登录按凭证文件互斥。说明见 README「多辆车」。
 - 背景资料：[README](README.md)、[办理凭证获取](docs/login-usage.md)、[参考项目及与官方 H5 的差异](docs/reference-notes.md)。
@@ -15,6 +15,7 @@
 - 用飞书私信本人通知办理、检查结果时，默认发卡片消息（`msg_type=interactive`）；用户明确要求其他格式时照办。
 - 办理、续办、检查和复查结果统一使用项目技能 [jjz-feishu-card](.agents/skills/jjz-feishu-card/SKILL.md)，由该技能的 `build_card.py` 生成固定版式；不手写卡片 JSON，也不在生成结果上增删组件。
 - 接收人 open_id 从环境变量 `FEISHU_OWNER_OPEN_ID` 读取，属于本机私有配置，不写进仓库。
+- 系统定时任务带 `--notify` 时由程序自己发卡片：结果不是 `wait` 就调用本机 `lark-cli` 以机器人身份私信，接收人是配置的 `[notify].feishu_open_id`。卡片规则在 `jjz/feishu.py`，与技能的 `build_card.py` 共用。代理运行的命令不加 `--notify`，以免重复通知。
 
 ## 硬性规则
 
@@ -23,8 +24,8 @@
 3. **不绕过保护**：程序返回 `blocked`、`uncertain`、`rejected` 时停下并报告原因。不要关闭证书校验，不要跳过或伪造服务端校验，不要为了放行而修改提交保护逻辑。
 4. **六环内证**：每车每年最多 12 次。只在用户当次明确要求时办理，办理前先用 `status` 报告 `inside_remaining` 并请用户确认。
 5. **解除保护**：`resolve` 只在用户本人到 App 核实确实没有提交、并在当次明确要求时执行。不要删除或改写 `data/` 下的文件。
-6. **个人信息**：车牌、姓名、证件号、地址、坐标不得写进代码、测试、文档示例、日志或代理记忆。测试一律用合成数据。程序输出已经脱敏，汇报时沿用脱敏后的车牌。
-7. **网络**：只调用 `jjz/api.py` 中列出的官方接口。新增或修改接口前，先对照官方 H5 公开脚本核实（见 docs/reference-notes.md）。
+6. **个人信息**：车牌、姓名、证件号、地址、坐标、飞书 open_id 不得写进代码、测试、文档示例、日志或代理记忆。测试一律用合成数据。程序输出已经脱敏，汇报时沿用脱敏后的车牌。
+7. **网络**：只调用 `jjz/api.py` 中列出的官方接口；飞书通知只通过本机 `lark-cli` 发送（`run --notify`）。新增或修改接口前，先对照官方 H5 公开脚本核实（见 docs/reference-notes.md）。
 
 ## 续办操作流程
 
@@ -70,10 +71,11 @@ Claude 应用里的定时任务可以无人值守地运行本节流程，任务�
 ## 后台定时任务
 
 ```sh
-# 固定六环外；默认每天一次，时间默认 earliest_time 后 10 分钟；文件已存在时先移走
+# 固定六环外；默认每天一次，时间默认 earliest_time 后 10 分钟，以运行定时任务的主机本地时间为准；文件已存在时先移走
 python3 -m jjz schedule                               # 每天一次，只预演
 python3 -m jjz schedule --submit                      # 每天一次，实际提交，须遵守规则 2
 python3 -m jjz schedule --submit --weekday 7 --time 08:10   # 每周日办理，1 小时后同一任务再运行一次，核对并兼作重试（--check-after 改间隔）
+python3 -m jjz schedule --submit --notify            # 需要本人处理时发飞书卡片；须先配置 [notify] 和 lark-cli，见 README「飞书通知」
 plutil -lint data/local.jjz.renew.config.plist
 launchctl bootstrap "gui/$(id -u)" "$PWD/data/local.jjz.renew.config.plist"
 launchctl print "gui/$(id -u)/local.jjz.renew.config"
@@ -91,7 +93,7 @@ Linux 用 systemd 用户定时器模板 `jjz-renew@.service`、`jjz-renew@.timer
 
 ## 修改代码
 
-- 只用标准库（可选的验证码识别除外，依赖记在 `requirements.txt` 和 `pyproject.toml` 的 `ocr`），延续现有写法：错误消息固定、可安全展示，不输出原始响应、凭证或个人信息。
+- 只用标准库（可选的验证码识别除外，依赖记在 `requirements.txt` 和 `pyproject.toml` 的 `ocr`；飞书 CLI 是外部命令，只写在 `requirements.txt` 的注释里），延续现有写法：错误消息固定、可安全展示，不输出原始响应、凭证或个人信息。
 - 提交内容要与北京交警当前 H5 申请页保持一致。字段或接口有变时，先核对官方脚本，再同步更新 `runtime.py`、`config.py`、`jjz/config.example.toml` 和 docs/reference-notes.md。
 - 改完运行 `python3 -m unittest discover -s tests`，必须全部通过。
 - 文档只写当前用法，不写"新增""旧版仍兼容"这类变更经过。

@@ -3,18 +3,21 @@
 import argparse
 from datetime import datetime
 from getpass import getpass
+import hashlib
 from importlib.resources import files
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
 import webbrowser
 from zoneinfo import ZoneInfo
 
+from . import feishu
 from .api import ApiClient, ApiError, BusinessLoginClient
 from .auth import AuthError, LoginGateway
 from .captcha_ocr import recognize_captcha
@@ -82,6 +85,8 @@ def parser():
     run.add_argument("--permit", choices=["outside", "inside"])
     run.add_argument("--submit", action="store_true", help="按配置实际提交符合条件的续办")
     run.add_argument("--scheduled", action="store_true", help="定时任务使用：按需办理（auto_renew = false）的车直接跳过")
+    run.add_argument("--notify", action="store_true",
+                     help="系统定时任务使用：结果需要本人处理时，用 lark-cli 机器人私信飞书卡片")
     sub.add_parser("history", help="查看本地脱敏提交记录")
     resolve = sub.add_parser("resolve", help="在 App 确认未提交后，解除一条本地提交保护")
     resolve.add_argument("--attempt", required=True)
@@ -89,10 +94,11 @@ def parser():
     service = sub.add_parser("schedule", help="生成 macOS 定时任务 plist（不自动加载）；默认每天运行一次")
     service.add_argument("--weekday", type=int, choices=range(1, 8), metavar="1-7",
                          help="改为每周这天办理一次（1 为周一，7 为周日），之后再检查一次兼作重试")
-    service.add_argument("--time", help="运行时间 HH:MM，按本机时区；默认是 earliest_time 后 10 分钟")
+    service.add_argument("--time", help="运行时间 HH:MM，以本机本地时间为准；默认是 earliest_time 后 10 分钟")
     service.add_argument("--check-after", type=int, default=60,
                          help="每周办理后隔多少分钟检查，默认 60")
     service.add_argument("--submit", action="store_true", help="生成实际提交任务；仍受配置开关约束")
+    service.add_argument("--notify", action="store_true", help="结果需要本人处理时发飞书通知，见 run --notify")
     return root
 
 
@@ -119,6 +125,16 @@ def render_schedule(settings, args):
     # One config per vehicle: the config file name keeps each vehicle's job distinct.
     if not CONFIG_NAME.fullmatch(settings.config_path.name):
         raise ConfigError(CONFIG_NAME_RULE)
+    environment = {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}
+    if args.notify:
+        if not settings.feishu_open_id:
+            raise ConfigError("--notify 需要先在配置的 [notify] 填写 feishu_open_id")
+        lark, node = shutil.which("lark-cli"), shutil.which("node")
+        if not lark:
+            raise ConfigError("--notify 需要本机已安装并配置 lark-cli，见 README「飞书通知」")
+        # launchd starts jobs with a bare PATH, and lark-cli is a Node script.
+        folders = [str(Path(path).parent) for path in (lark, node) if path]
+        environment["PATH"] = ":".join(dict.fromkeys([*folders, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))
     label = "local.jjz.renew." + settings.config_path.stem
     runs = [(args.weekday, start)]
     if args.weekday:
@@ -136,6 +152,8 @@ def render_schedule(settings, args):
                "run", "--scheduled", "--permit", "outside"]
     if args.submit:
         command.append("--submit")
+    if args.notify:
+        command.append("--notify")
     intervals = []
     for weekday, moment in runs:
         interval = {"Hour": moment // 60, "Minute": moment % 60}
@@ -153,12 +171,12 @@ def render_schedule(settings, args):
         "Umask": 0o077,
         "StandardOutPath": str(settings.data_dir / "launchd.log"),
         "StandardErrorPath": str(settings.data_dir / "launchd.log"),
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"},
+        "EnvironmentVariables": environment,
     }
     private_write(path, plistlib.dumps(payload))
     return {"action": "schedule_created", "label": label, "path": str(path),
             "runs": [{"weekday": weekday, "time": f"{moment // 60:02d}:{moment % 60:02d}"} for weekday, moment in runs],
-            "submission": args.submit, "permit": "outside", "loaded": False}
+            "submission": args.submit, "notify": args.notify, "permit": "outside", "loaded": False}
 
 
 def _ask_captcha(settings, image):
@@ -206,6 +224,16 @@ def _open_login(settings, gateway):
 def _can_apply(vehicle):
     # The official permit-type page enables a type only when its flag is true.
     return {permit: vehicle.get(flag) is True for permit, flag in AVAILABLE_FLAG.items()}
+
+
+def _status_result(settings, response):
+    records = normalize(response, settings.plate)
+    vehicle = select_vehicle(response, settings.plate)
+    # Only explicit safe fields, never permit IDs, names, credentials or raw messages.
+    return {"action": "status", "vehicle": mask_plate(settings.plate), "records": [
+        {"permit": record_type(row), "status": row.get("blztmc"),
+         "start": row.get("yxqs"), "end": row.get("yxqz")} for row in records],
+        "can_apply": _can_apply(vehicle), "inside_remaining": _remaining_count(vehicle.get("sycs"))}
 
 
 def _vehicle_configs(settings, *, skip_unreadable=False):
@@ -403,9 +431,48 @@ def interactive_login(settings, method, gateway=None, *, save=False, create_conf
     return _finish_login(settings, gateway, result, save=save, create_configs=create_configs)
 
 
+# Outcomes of a run that sent an application; the card reports them as this run's submission.
+SUBMITTED = {"accepted", "verified", "approved", "uncertain", "rejected"}
+
+
+def notify_owner(settings, result, submitted):
+    """Send a scheduled run's result to the owner on Feishu; returns fields for the output.
+
+    A wait result sends nothing. The card adds a fresh status query, as an agent does after
+    submitting. Nothing here raises, so a failed notification never changes the run's result.
+    """
+    if result.get("action") == "wait":
+        return {}
+    if settings is None or not settings.feishu_open_id:
+        return {"notify": "failed", "notify_reason": "未配置 notify.feishu_open_id"}
+    try:
+        status = None
+        if result.get("category") != "auth_expired":
+            try:
+                status = _status_result(settings, ApiClient(settings).state())
+                status["checked_at"] = datetime.now(BEIJING).isoformat(timespec="seconds")
+            except (ConfigError, DomainError, ApiError, ValueError, OSError):
+                status = None
+        submit = result if submitted and result.get("action") in SUBMITTED else None
+        run = None if submit else result
+        mode, permit = ("apply" if submitted else "check"), result.get("permit") or "outside"
+        content = json.dumps(feishu.card(mode, status, run, submit, permit), ensure_ascii=False)
+        fallback = feishu.text(mode, status, run, submit, permit)
+        # lark-cli sends a key only once, so distinct results in one minute need distinct keys;
+        # only a repeat of the very same card is merged.
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
+        key = f"jjz-{datetime.now(BEIJING):%Y%m%d-%H%M}-{digest}-{settings.config_path.stem}"[:45]
+        outcome, reason = feishu.send(settings.feishu_open_id, content, fallback, key)
+    except Exception:
+        outcome, reason = "failed", "通知处理失败"
+    return {"notify": outcome, **({"notify_reason": reason} if reason else {})}
+
+
 def main(argv=None):
     os.umask(0o077)
     args = parser().parse_args(argv)
+    settings = None
+    notify = args.command == "run" and args.notify
     try:
         config_path = Path(args.config).expanduser().resolve()
         if args.command == "init":
@@ -529,16 +596,10 @@ def main(argv=None):
                 settings.validate_live()
                 response, relogin = with_relogin(settings, lambda: ApiClient(settings).state())
                 now = datetime.now(BEIJING)
-            records = normalize(response, settings.plate)
             if args.command == "status":
-                vehicle = select_vehicle(response, settings.plate)
-                remaining = vehicle.get("sycs")
-                # Only explicit safe fields, never permit IDs, names, credentials or raw messages.
-                result = {"action": "status", "vehicle": mask_plate(settings.plate), "records": [
-                    {"permit": record_type(row), "status": row.get("blztmc"),
-                     "start": row.get("yxqs"), "end": row.get("yxqz")} for row in records],
-                    "can_apply": _can_apply(vehicle), "inside_remaining": _remaining_count(remaining)}
+                result = _status_result(settings, response)
             else:
+                records = normalize(response, settings.plate)
                 result = describe(plan(records, permit, now, settings.earliest_time,
                                        settings.outside_lead_days), settings.plate)
                 if fixture:
@@ -546,6 +607,8 @@ def main(argv=None):
         if relogin:
             result["relogin"] = relogin
         result["checked_at"] = now.isoformat(timespec="seconds")
+        if notify:
+            result.update(notify_owner(settings, result, args.submit))
         emit(result)
         return 2 if result["action"] in {"blocked", "uncertain", "rejected"} else 0
     except (ConfigError, DomainError, ApiError, AuthError, BusyError, ValueError, OSError, sqlite3.Error):
@@ -559,11 +622,16 @@ def main(argv=None):
             result["category"] = "auth_expired"
             if isinstance(error, ReloginFailed):
                 result["relogin"] = "failed"
+        if notify:
+            result.update(notify_owner(settings, result, args.submit))
         emit(result)
         return 2
     except Exception:
         # Unexpected errors still end with one JSON line; only the type name is safe to show.
-        emit({"action": "error", "reason": "程序内部错误，本次已停止", "error_type": type(sys.exception()).__name__})
+        result = {"action": "error", "reason": "程序内部错误，本次已停止", "error_type": type(sys.exception()).__name__}
+        if notify:
+            result.update(notify_owner(settings, result, args.submit))
+        emit(result)
         return 2
 
 
