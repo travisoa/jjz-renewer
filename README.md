@@ -9,13 +9,13 @@
 - 先把提交意图写入 SQLite 再提交；超时、中断或结果不明时只查询核验，不会盲目重发。
 - 业务凭证有两种取得方式：在终端用手机号（密码或短信）登录，核验目标车辆后保存；或从北京交警 App 的查询请求中取得后手动保存。
 - 图形验证码可由 `ddddocr` 在进程内自动识别，识别失败时再由本人输入。
-- 凭证到期后，下次办理时自动登录续期（`auto_relogin`，示例配置默认开启，用密码和本机验证码识别）；程序只输出结果，通知由定时代理任务负责发送。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
+- 凭证到期后，下次办理时自动登录续期（`auto_relogin`，示例配置默认开启，用密码和本机验证码识别）；程序只输出结果，通知由 AI 代理定时任务负责发送。登录各环节的验证情况见 [验证范围](docs/login-usage.md#验证范围与故障处理)。
 
 ## 运行环境
 
 | 依赖 | 要求 | 用途 | 已测试版本 |
 | --- | --- | --- | --- |
-| macOS | 开机、用户已登录并联网；睡眠时定时任务不运行 | 进程锁（`fcntl`）、launchd 定时任务、用默认浏览器打开验证码图片 | — |
+| macOS | 开机、用户已登录并联网；睡眠时错过的定时任务在唤醒后补跑 | 进程锁（`fcntl`）、launchd 定时任务、用默认浏览器打开验证码图片 | — |
 | Linux | 联网，装有时区数据（`tzdata`）；定时任务要在未登录时运行须开启 linger | 进程锁（`fcntl`）、systemd 用户定时任务；没有图形界面时输出验证码图片路径，由本人自行打开 | Debian 13 |
 | Python | 3.11 及以上（标准库自带 `tomllib`） | 运行程序，核心功能不需要第三方包 | 3.14（macOS）、3.11（Debian 13） |
 | `openssl` 命令 | 在 `PATH` 中，支持 `pkey`、`pkeyutl` | 手机号登录时按官方协议做 RSA 加密 | OpenSSL 3.6（macOS）、3.5（Debian 13）；macOS 自带的 LibreSSL 3.3 |
@@ -82,38 +82,53 @@ python3 -m jjz --config config-car2.toml doctor
 ```
 
 - 新配置依次命名为 `config-car2.toml`、`config-car3.toml`，数据目录是 `data/car2`、`data/car3`。车牌写在文件里，输出只显示脱敏车牌。申请模板、`earliest_time`、凭证和登录设置照抄 `--config` 指定的配置（默认 `config.toml`），请按这辆车的实际情况核对。
-- `[renewal].auto_renew` 决定这辆车怎么办理：`true` 是自动续办，定时任务和定时代理处理这辆车；`false` 是按需办理，只在本人点名时查询和办理，`schedule` 也不为它生成定时任务。配置里没写时按 `true` 处理。新生成的配置 `auto_renew` 和 `submission_enabled` 都是 `false`，要自动续办时两项都改为 `true`，再生成定时任务。
+- `[renewal].auto_renew` 决定这辆车怎么办理：`true` 是自动续办，系统定时任务和 AI 代理定时任务都处理这辆车；`false` 是按需办理，只在本人点名时查询和办理，`schedule` 也不为它生成定时任务。配置里没写时按 `true` 处理。新生成的配置 `auto_renew` 和 `submission_enabled` 都是 `false`，要自动续办时两项都改为 `true`，再生成定时任务。
 - 每辆车只保留一份配置。这几份配置的提交记录互不相通，所以同一辆车有多份配置时，`vehicles` 退出码为 2 并把这些文件列在 `duplicates`，`run` 直接返回 `blocked`、不提交。账号里已经没有的车，其配置列在 `unmatched_configs`。官方每个账号最多绑定 3 辆车，程序不按这个数限制查询结果。
 - 手动新建配置用 `python3 -m jjz --config config-<名称>.toml init`，名称只用英文字母、数字、`-` 和 `_`，数据目录自动设为 `data/<名称>`，`auto_renew` 和 `submission_enabled` 也都是 `false`。`init` 和 `schedule` 只接受 `config.toml` 和这种文件名，定时任务按文件名区分；`.gitignore` 忽略项目根目录下除 `pyproject.toml` 以外的全部 `.toml` 文件。提交记录、运行锁和定时任务日志都在各自的数据目录里；几份配置共用一个目录时，同时运行会互相跳过。
 - 同一账号下的车共用 `secrets/authorization.txt` 和 `secrets/login.toml`，用其中任一份配置运行一次 `auth-set` 即可。凭证失效时，几份配置的自动重新登录依次进行：先登录的保存新凭证，后面的不再登录，直接用新凭证重新执行，输出 `relogin: shared`；后面的最多等 2 分钟，超时按自动重新登录失败处理。不同账号的车把 `api.auth_file`、`api.login_file` 指向各自的文件。
-- 续办日按每辆车自己的证件到期日计算，每天最早几点办由各自的 `earliest_time` 决定。每辆车的定时任务或定时代理任务也可以分别安排运行时间。
+- 续办日按每辆车自己的证件到期日计算，每天最早几点办由各自的 `earliest_time` 决定。每辆车的定时任务也可以分别安排运行时间。
 
 ## 自动续办
 
-**macOS 定时任务**：每 30 分钟运行一次，固定只处理六环外。每份自动续办的配置生成一个任务，任务名是 `local.jjz.renew.<配置文件名>`；任务运行的是 `run --scheduled`，配置改为按需办理后，任务直接跳过这辆车。
+定时任务有两种，选一种即可，都只办六环外证，并跳过按需办理（`auto_renew = false`）的车：
+
+- **系统定时任务**：由 macOS launchd 或 Linux systemd 直接运行本程序，结果只写日志。
+- **AI 代理定时任务**：在 Claude 应用等支持定时任务的代理里新建任务，代理按 [AGENTS.md](AGENTS.md) 办理和检查，汇报结果，需要你处理时推送通知。运行时间自己定，建议到期当天 `earliest_time` 之后办理一次，稍晚再检查一次。
+
+不管用哪种，实际提交都还要求配置里 `[renewal].submission_enabled = true`；开关没开时只做校验，返回 `blocked`。同一辆车只在一台机器上定时运行，提交记录不跨机器共享。
+
+### 系统定时任务
+
+有两种排法：
+
+- **每天一次（默认）**：每天检查一次，到期当天自动续办，其余日子只返回 `wait`。
+- **每周一次**：加 `--weekday`，在这天办理一次，1 小时后再运行一次核对结果，前一次没提交成功时顺带补办（`--check-after` 改间隔分钟数）。适合证件固定在每周同一天到期。
+
+运行时间默认是 `earliest_time`（默认 08:00）后 10 分钟，`--time` 可改，不能早于 `earliest_time`。
+
+**macOS**：`schedule` 生成调度文件，不自动加载。`--weekday` 是星期几（1 为周一，7 为周日），时间按本机时区。任务名是 `local.jjz.renew.<配置文件名>`，每周排法的两次运行在同一个任务里。
 
 ```sh
-python3 -m jjz schedule --submit             # 去掉 --submit 则只预演；其他车辆加 --config config-car2.toml
-plutil -lint data/local.jjz.renew.config.plist
+python3 -m jjz schedule --submit                              # 每天 08:10；不带 --submit 只预演
+python3 -m jjz schedule --submit --weekday 7 --time 08:10     # 或者：每周日 08:10 办理，09:10 检查
 launchctl bootstrap "gui/$(id -u)" "$PWD/data/local.jjz.renew.config.plist"
-launchctl print "gui/$(id -u)/local.jjz.renew.config"
-launchctl list | grep local.jjz.renew                      # 已加载的全部续办任务
-launchctl bootout "gui/$(id -u)/local.jjz.renew.config"   # 停止；任务名以上一行列出的为准
+launchctl list | grep local.jjz.renew                         # 已加载的任务
+launchctl bootout "gui/$(id -u)/local.jjz.renew.config"       # 停止
+tail -n 5 data/launchd.log                                    # 最近几次结果
 ```
 
-调度文件默认写在该配置的数据目录，`schedule` 输出的 `label` 和 `path` 就是后面命令要用的任务名和文件路径。例如 `config-car2.toml` 设了 `data_dir = "data/car2"`，对应任务 `local.jjz.renew.config-car2` 和文件 `data/car2/local.jjz.renew.config-car2.plist`。调度文件只生成一次，重新生成前要先移走旧文件。文件里写的是配置、解释器和项目目录的绝对路径，不含凭证；项目或解释器移动后要重新生成。电脑睡眠时不会运行，所以不能保证有效期连续不断。输出追加在该数据目录的 `launchd.log`。
+调度文件和日志都在该配置的数据目录，`schedule` 输出的 `label`、`path` 就是任务名和文件路径；其他车辆把 `--config config-car2.toml` 写在 `schedule` 前面。`schedule` 不覆盖已有文件，改排法或时间时先 `bootout`、移走旧调度文件再重新生成；项目目录移动或 Python 升级小版本后也要这样重新生成。睡眠时错过的任务在唤醒后补跑一次。
 
-**Linux 定时任务**：用 systemd 用户定时器模板，同样每 30 分钟运行一次、固定只处理六环外。实例名就是配置文件名（不含 `.toml`），每辆车启用一个实例。`schedule` 命令只生成 macOS 的调度文件，Linux 上按下面内容手动创建两个文件：把 `/path/to/jjz-renewer` 换成项目目录的绝对路径，`/usr/bin/python3` 换成 `command -v python3` 的结果。
+**Linux**：用 systemd 用户定时器，实例名是配置文件名（不含 `.toml`）。按下面内容创建两个文件，把 `/path/to/jjz-renewer` 换成项目目录，`/usr/bin/python3` 换成 `command -v python3` 的结果。改成每周排法时，把 `OnCalendar` 换成两行，如 `Sun *-*-* 08:10:00` 和 `Sun *-*-* 09:10:00`。
 
 ```ini
 # ~/.config/systemd/user/jjz-renew@.service
 [Unit]
-Description=jjz outside renewal check (%i)
+Description=jjz outside renewal (%i)
 
 [Service]
 Type=oneshot
 WorkingDirectory=/path/to/jjz-renewer
-# %i 是实例名，即配置文件名；去掉 --submit 则只预演
 ExecStart=/usr/bin/python3 -m jjz --config /path/to/jjz-renewer/%i.toml run --scheduled --permit outside --submit
 UMask=0077
 Environment=PYTHONUNBUFFERED=1 PYTHONUTF8=1
@@ -122,11 +137,12 @@ Environment=PYTHONUNBUFFERED=1 PYTHONUTF8=1
 ```ini
 # ~/.config/systemd/user/jjz-renew@.timer
 [Unit]
-Description=Run jjz renewal check every 30 minutes (%i)
+Description=Daily jjz outside renewal (%i)
 
 [Timer]
-OnActiveSec=1min
-OnUnitActiveSec=30min
+# 每天 08:10；关机时错过的开机后补跑
+OnCalendar=*-*-* 08:10:00
+Persistent=true
 
 [Install]
 WantedBy=timers.target
@@ -135,15 +151,12 @@ WantedBy=timers.target
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now jjz-renew@config.timer          # 其他车辆如 jjz-renew@config-car2.timer
-systemctl --user list-timers 'jjz-renew*'                     # 已启用的全部续办定时器
-journalctl --user -u jjz-renew@config.service -n 5 -o cat     # 最近几次输出
+systemctl --user list-timers 'jjz-renew*'                     # 已启用的定时器和下次运行时间
+journalctl --user -u jjz-renew@config.service -n 5 -o cat     # 最近几次结果
 loginctl enable-linger "$USER"                                # 用户未登录时也运行
-systemctl --user disable --now jjz-renew@config.timer         # 停止；定时器名以 list-timers 列出的为准
 ```
 
-输出写进 systemd 日志，用 `journalctl` 查看；返回 `blocked`、`uncertain`、`rejected`、`error` 时退出码为 2，服务会显示为 failed。不要让 macOS 和 Linux 同时为同一辆车运行定时任务：两台机器的提交记录各自独立，不能互相防止重复提交。
-
-**代理代办**：让 Codex 或 Claude Code 在本项目里"看下进京证"或"续一下"，代理会按 [AGENTS.md](AGENTS.md) 的流程查询、预演并报告；有多份配置时，点名哪辆车就只处理那辆，不点名就逐辆处理自动续办的车，按需办理的车只在点名时处理。只有开关已打开、校验全部通过时，代理才会提交；凭证失效且自动重新登录未开启或未成功时，会请你重新登录。也可以在 Claude 应用中配置定时代理任务，按 AGENTS.md 的"定时代理检查"无人值守运行。定时任务和代理可以同时使用：进程锁和提交记录保证不会重复提交。
+平时也可以直接让 Codex 或 Claude Code 在本项目里"看下进京证""续一下"。
 
 ## 提交流程与保护
 

@@ -356,37 +356,47 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(main(["--config", str(config), "plan", "--fixture", str(fixture),
                                        "--at", NOW.isoformat()]), 0)
             self.assertEqual(json.loads(output.getvalue())["apply_date"], "2026-10-26")
-            schedule = root / "schedule.plist"
-            with redirect_stdout(StringIO()):
-                self.assertEqual(main(["--config", str(config), "schedule", "--output", str(schedule)]), 0)
+            # Without --weekday the job runs every day, a margin past earliest_time.
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["--config", str(config), "schedule"]), 0)
+            result = json.loads(output.getvalue())
+            self.assertEqual((result["label"], result["runs"]),
+                             ("local.jjz.renew.config", [{"weekday": None, "time": "08:10"}]))
+            schedule = Path(result["path"])
             data = plistlib.loads(schedule.read_bytes())
             self.assertEqual(data["Label"], "local.jjz.renew.config")
-            self.assertEqual(data["StartInterval"], 1800)
+            self.assertEqual(data["StartCalendarInterval"], [{"Hour": 8, "Minute": 10}])
+            # A calendar job must not also run at every login.
+            self.assertNotIn("RunAtLoad", data)
+            self.assertNotIn("StartInterval", data)
             self.assertEqual(data["ProgramArguments"][-2:], ["--permit", "outside"])
             self.assertNotIn("--submit", data["ProgramArguments"])
             self.assertNotIn("SYNTHETIC_AUTHORIZATION", schedule.read_text())
 
-    def test_schedule_names_each_vehicle_config(self):
+    def test_weekly_schedule_reruns_the_same_job_as_a_check(self):
         previous_umask = os.umask(0o077)
         self.addCleanup(os.umask, previous_umask)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
-            labels = {}
-            for name, data_dir in (("config", "data"), ("config-car2", "data/car2")):
+            for name, data_dir, extra in (("config", "data", ["--submit"]), ("config-car2", "data/car2", [])):
                 config = root / (name + ".toml")
                 config.write_text(f'[storage]\ndata_dir = "{data_dir}"\n', encoding="utf-8")
                 output = StringIO()
                 with redirect_stdout(output):
-                    self.assertEqual(main(["--config", str(config), "schedule"]), 0)
+                    self.assertEqual(main(["--config", str(config), "schedule", *extra,
+                                           "--weekday", "7", "--time", "23:30"]), 0)
                 result = json.loads(output.getvalue())
-                path = root / data_dir / (result["label"] + ".plist")
-                self.assertEqual(result["path"], str(path))
+                # The check an hour after a late Sunday renewal falls on Monday.
+                self.assertEqual(result["runs"], [{"weekday": 7, "time": "23:30"}, {"weekday": 1, "time": "00:30"}])
+                path = root / data_dir / ("local.jjz.renew." + name + ".plist")
+                self.assertEqual((result["label"], result["path"]), ("local.jjz.renew." + name, str(path)))
                 data = plistlib.loads(path.read_bytes())
-                self.assertEqual(data["Label"], result["label"])
+                # One job runs both times, so launchd merges runs missed during sleep instead of racing them.
+                self.assertEqual(data["StartCalendarInterval"], [{"Weekday": 7, "Hour": 23, "Minute": 30},
+                                                                 {"Weekday": 1, "Hour": 0, "Minute": 30}])
+                self.assertEqual("--submit" in data["ProgramArguments"], bool(extra))
                 self.assertEqual(data["StandardOutPath"], str(root / data_dir / "launchd.log"))
-                labels[name] = result["label"]
-            self.assertEqual(labels, {"config": "local.jjz.renew.config",
-                                      "config-car2": "local.jjz.renew.config-car2"})
             config = root / "车辆3.toml"
             config.write_text('[storage]\ndata_dir = "data/car3"\n', encoding="utf-8")
             output = StringIO()
@@ -394,6 +404,33 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(main(["--config", str(config), "schedule"]), 2)
             self.assertEqual(json.loads(output.getvalue())["action"], "error")
             self.assertFalse((root / "data/car3").exists())
+
+    def test_schedule_rejects_invalid_times_and_existing_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            config = root / "config.toml"
+            config.write_text('[storage]\ndata_dir = "data"\n', encoding="utf-8")
+            # 07:59 is before the default earliest_time, so the renewal day would only wait.
+            for extra in (["--time", "8:10"], ["--time", "24:00"], ["--time", "07:59"],
+                          ["--weekday", "7", "--check-after", "5"]):
+                with self.subTest(extra=extra):
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(main(["--config", str(config), "schedule", *extra]), 2)
+                    self.assertEqual(json.loads(output.getvalue())["action"], "error")
+            for value in ("0", "8"):
+                with self.subTest(weekday=value), redirect_stderr(StringIO()):
+                    with self.assertRaises(SystemExit):
+                        main(["--config", str(config), "schedule", "--weekday", value])
+            self.assertFalse((root / "data").exists())
+            # An existing schedule is never replaced in place.
+            (root / "data").mkdir()
+            (root / "data/local.jjz.renew.config.plist").write_bytes(b"old")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["--config", str(config), "schedule", "--weekday", "7"]), 2)
+            self.assertEqual(json.loads(output.getvalue())["action"], "error")
+            self.assertEqual((root / "data/local.jjz.renew.config.plist").read_bytes(), b"old")
 
     def test_init_creates_login_file_at_configured_path(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -70,9 +70,10 @@ Claude 应用里的定时任务可以无人值守地运行本节流程，任务�
 ## 后台定时任务
 
 ```sh
-# 生成每 30 分钟运行一次的任务（固定六环外）；文件已存在时先移走
-python3 -m jjz schedule            # 只预演
-python3 -m jjz schedule --submit   # 实际提交，须遵守规则 2
+# 固定六环外；默认每天一次，时间默认 earliest_time 后 10 分钟；文件已存在时先移走
+python3 -m jjz schedule                               # 每天一次，只预演
+python3 -m jjz schedule --submit                      # 每天一次，实际提交，须遵守规则 2
+python3 -m jjz schedule --submit --weekday 7 --time 08:10   # 每周日办理，1 小时后同一任务再运行一次，核对并兼作重试（--check-after 改间隔）
 plutil -lint data/local.jjz.renew.config.plist
 launchctl bootstrap "gui/$(id -u)" "$PWD/data/local.jjz.renew.config.plist"
 launchctl print "gui/$(id -u)/local.jjz.renew.config"
@@ -80,9 +81,9 @@ launchctl list | grep local.jjz.renew   # 已加载的全部续办任务；停�
 launchctl bootout "gui/$(id -u)/local.jjz.renew.config"
 ```
 
-任务名是 `local.jjz.renew.<配置文件名>`，plist 默认写在该配置的数据目录；其他车辆加 `--config`，后续命令用 `schedule` 输出的 `label` 和 `path`。按需办理（`auto_renew = false`）的配置不生成任务；任务运行的是 `run --scheduled`，配置改为按需办理后任务直接跳过这辆车。Mac 必须开机、用户登录且联网；睡眠时任务不运行。
+任务名是 `local.jjz.renew.<配置文件名>`，每周排法的两次运行在同一个任务里，plist 默认写在该配置的数据目录；其他车辆加 `--config`，后续命令用 `schedule` 输出的 `label` 和 `path`。用每天还是每周、星期和时间由用户决定，代理不自行选定。按需办理（`auto_renew = false`）的配置不生成任务；任务运行的是 `run --scheduled`，配置改为按需办理后任务直接跳过这辆车。Mac 必须开机、用户登录且联网；睡眠时错过的运行在唤醒后合并补跑一次。
 
-Linux 用 systemd 用户定时器模板 `jjz-renew@.service`、`jjz-renew@.timer`，每辆车启用一个以配置文件名为实例名的定时器，`systemctl --user list-timers 'jjz-renew*'` 列出已启用的全部续办定时器，单元文件和命令见 README「自动续办」。带 `--submit` 的单元文件同样须遵守规则 2。同一辆车只在一台机器上运行定时任务，提交记录不跨机器共享。
+Linux 用 systemd 用户定时器模板 `jjz-renew@.service`、`jjz-renew@.timer`（默认每天，每周排法写两行 `OnCalendar`），每辆车启用一个以配置文件名为实例名的定时器，`systemctl --user list-timers 'jjz-renew*'` 列出已启用的全部续办定时器，单元文件和命令见 README「自动续办」。带 `--submit` 的单元文件同样须遵守规则 2。同一辆车只在一台机器上运行定时任务，提交记录不跨机器共享。
 
 ## 排错
 

@@ -86,22 +86,49 @@ def parser():
     resolve = sub.add_parser("resolve", help="在 App 确认未提交后，解除一条本地提交保护")
     resolve.add_argument("--attempt", required=True)
     resolve.add_argument("--confirmed-not-submitted", action="store_true", required=True)
-    service = sub.add_parser("schedule", help="生成 macOS 定时任务 plist（不自动加载）")
-    service.add_argument("--output", type=Path, help="默认写到配置的数据目录，文件名为任务名")
-    service.add_argument("--interval", type=int, default=1800, help="检查间隔秒，最小 900")
+    service = sub.add_parser("schedule", help="生成 macOS 定时任务 plist（不自动加载）；默认每天运行一次")
+    service.add_argument("--weekday", type=int, choices=range(1, 8), metavar="1-7",
+                         help="改为每周这天办理一次（1 为周一，7 为周日），之后再检查一次兼作重试")
+    service.add_argument("--time", help="运行时间 HH:MM，按本机时区；默认是 earliest_time 后 10 分钟")
+    service.add_argument("--check-after", type=int, default=60,
+                         help="每周办理后隔多少分钟检查，默认 60")
     service.add_argument("--submit", action="store_true", help="生成实际提交任务；仍受配置开关约束")
     return root
 
 
+def _minutes(clock):
+    hour, minute = clock.split(":")
+    return int(hour) * 60 + int(minute)
+
+
 def render_schedule(settings, args):
-    if not 900 <= args.interval <= 86400:
-        raise ConfigError("调度间隔须在 900 到 86400 秒之间")
+    earliest = _minutes(settings.earliest_time)
+    if args.time is None:
+        # A margin past earliest_time keeps a slightly slow clock from waiting out the day.
+        start = min(earliest + 10, 23 * 60 + 59)
+    elif re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", args.time):
+        start = _minutes(args.time)
+    else:
+        raise ConfigError("--time 必须是 HH:MM 时间")
+    if start < earliest:
+        raise ConfigError("--time 不能早于 renewal.earliest_time，否则到期当天只会等待")
+    if not 10 <= args.check_after <= 1440:
+        raise ConfigError("--check-after 须在 10 到 1440 分钟之间")
     if not settings.auto_renew:
         raise ConfigError("这辆车设为按需办理（renewal.auto_renew = false），不生成定时任务")
     # One config per vehicle: the config file name keeps each vehicle's job distinct.
     if not CONFIG_NAME.fullmatch(settings.config_path.name):
         raise ConfigError(CONFIG_NAME_RULE)
     label = "local.jjz.renew." + settings.config_path.stem
+    runs = [(args.weekday, start)]
+    if args.weekday:
+        # The weekly check reruns the same job: it verifies the renewal and retries one that failed
+        # before submitting, while submission protection stops a second submission.
+        day, moment = divmod((args.weekday - 1) * 1440 + start + args.check_after, 1440)
+        runs.append((day % 7 + 1, moment))
+    path = (settings.data_dir / (label + ".plist")).resolve()
+    if path.exists():
+        raise ConfigError("调度文件已存在；先停止旧任务并移走旧调度文件，再重新生成")
     settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     # A pinned outside target keeps manual inside requests out of the background job.
     # --scheduled lets a later switch to on-demand stop the job without reloading it.
@@ -109,22 +136,28 @@ def render_schedule(settings, args):
                "run", "--scheduled", "--permit", "outside"]
     if args.submit:
         command.append("--submit")
+    intervals = []
+    for weekday, moment in runs:
+        interval = {"Hour": moment // 60, "Minute": moment % 60}
+        if weekday:
+            interval["Weekday"] = weekday
+        intervals.append(interval)
     project = Path(__file__).resolve().parent.parent
     payload = {
         "Label": label,
         "ProgramArguments": command,
         "WorkingDirectory": str(project),
-        "StartInterval": args.interval,
-        "RunAtLoad": True,
+        # launchd coalesces runs missed during sleep into one on wake, so the two weekly runs never collide.
+        "StartCalendarInterval": intervals,
         "ProcessType": "Background",
         "Umask": 0o077,
         "StandardOutPath": str(settings.data_dir / "launchd.log"),
         "StandardErrorPath": str(settings.data_dir / "launchd.log"),
         "EnvironmentVariables": {"PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"},
     }
-    path = (args.output or settings.data_dir / (label + ".plist")).expanduser().resolve()
     private_write(path, plistlib.dumps(payload))
-    return {"action": "schedule_created", "label": label, "path": str(path), "interval_seconds": args.interval,
+    return {"action": "schedule_created", "label": label, "path": str(path),
+            "runs": [{"weekday": weekday, "time": f"{moment // 60:02d}:{moment % 60:02d}"} for weekday, moment in runs],
             "submission": args.submit, "permit": "outside", "loaded": False}
 
 
